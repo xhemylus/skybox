@@ -8,7 +8,7 @@ import { env } from "@/lib/env";
 import { putObject } from "@/lib/s3";
 import { enqueueParse } from "@/lib/queue";
 import { clientIp, rateLimit } from "@/lib/redis";
-import { generateShareCode } from "@/lib/shareCode";
+import { generateShareCode } from "@/lib/generateShareCode";
 import { MIN_DEMO_BYTES } from "@skybox/shared";
 
 export const runtime = "nodejs";

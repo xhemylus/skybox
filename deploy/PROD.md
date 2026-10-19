@@ -133,15 +133,22 @@ Caddy obtient le certificat Let’s Encrypt tout seul si le DNS est bon.
 
 ---
 
-## 8. Services web + worker
+## 8. Services (infra + web + worker) — démarrage auto au boot
 
 ```bash
+# Docker doit démarrer au boot
+systemctl enable docker
+
+cp deploy/demoreviewer-infra.service /etc/systemd/system/
 cp deploy/demoreviewer-web.service /etc/systemd/system/
 cp deploy/demoreviewer-worker.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now demoreviewer-web demoreviewer-worker
-systemctl status demoreviewer-web demoreviewer-worker
+systemctl enable --now demoreviewer-infra demoreviewer-web demoreviewer-worker caddy
+systemctl status demoreviewer-infra demoreviewer-web demoreviewer-worker caddy
 ```
+
+Ordre au reboot : Docker → Postgres/Redis (`demoreviewer-infra`) → web + worker → Caddy.  
+Sans Redis, le login Steam échoue (nonce OpenID).
 
 Logs :
 

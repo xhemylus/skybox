@@ -1,6 +1,7 @@
 [Unit]
 Description=DemoReviewer worker (BullMQ parse)
-After=network.target docker.service
+Requires=demoreviewer-infra.service
+After=network.target docker.service demoreviewer-infra.service
 Wants=docker.service
 
 [Service]
@@ -8,6 +9,7 @@ Type=simple
 WorkingDirectory=/opt/demoreviewer
 Environment=NODE_ENV=production
 EnvironmentFile=/opt/demoreviewer/.env
+ExecStartPre=/bin/sleep 2
 ExecStart=/usr/bin/npm run start -w @skybox/worker
 Restart=always
 RestartSec=5

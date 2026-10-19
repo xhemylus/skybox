@@ -35,13 +35,43 @@ const parser = require("@laihoe/demoparser2") as {
     playerExtra?: string[] | null,
     otherExtra?: string[] | null,
   ) => Row[];
+  parseEvents: (
+    d: Buffer,
+    names?: string[] | null,
+    playerExtra?: string[] | null,
+    otherExtra?: string[] | null,
+  ) => unknown;
   parseTicks: (d: Buffer, props: string[], ticks?: number[] | null) => Row[];
-  parseGrenades: (d: Buffer) => Row[];
+  parseGrenades: (
+    d: Buffer,
+    extra?: string[] | null,
+    grenades?: boolean | null,
+  ) => Row[];
 };
 
 type Row = Record<string, unknown>;
 
-const SAMPLE_STEP = 4;
+/** ~8 Hz at 64-tick — enough for 2D review, much faster parse. */
+const SAMPLE_STEP = 8;
+
+const EVENT_NAMES = [
+  "round_start",
+  "round_freeze_end",
+  "round_end",
+  "round_announce_match_start",
+  "player_death",
+  "player_hurt",
+  "bomb_planted",
+  "bomb_defused",
+  "bomb_exploded",
+  "smokegrenade_expired",
+  "inferno_expire",
+  "smokegrenade_detonate",
+  "inferno_startburn",
+  "flashbang_detonate",
+  "hegrenade_detonate",
+] as const;
+
 const PATH_STEP = 2;
 const TRADE_WINDOW_SECONDS = 5;
 
@@ -78,6 +108,26 @@ const num = (v: unknown, fallback = 0) => {
 const str = (v: unknown) => (v == null ? "" : String(v));
 const sideOfTeamNum = (v: unknown): Side | null =>
   num(v) === 3 ? "CT" : num(v) === 2 ? "T" : null;
+
+/** Normalize parseEvents output (object map or flat rows with event_name). */
+function groupEvents(raw: unknown): Record<string, Row[]> {
+  const out: Record<string, Row[]> = {};
+  if (Array.isArray(raw)) {
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const name = str((row as Row).event_name || (row as Row).event);
+      if (!name) continue;
+      (out[name] ??= []).push(row as Row);
+    }
+    return out;
+  }
+  if (raw && typeof raw === "object") {
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (Array.isArray(value)) out[key] = value as Row[];
+    }
+  }
+  return out;
+}
 
 /** Team A starts CT regulation H1; flips each half. OT MR3 halves continue from H2 (A=T). */
 function defaultSidesForRound(roundNumber: number): Record<TeamKey, Side> {
@@ -117,12 +167,26 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
     throw new Error(`Not a CS2 demo (magic=${JSON.stringify(magic)})`);
   }
 
+  const t0 = Date.now();
   const header = parser.parseHeader(demo);
   const map = normalizeMapName(str(header.map_name));
   const tickRate = 64;
 
-  const ev = (name: string, playerExtra: string[] = []) =>
-    parser.parseEvent(demo, name, playerExtra, []);
+  // One pass for all events (each parseEvent() re-reads the whole demo).
+  let events = groupEvents(
+    parser.parseEvents(demo, [...EVENT_NAMES], ["X", "Y", "Z"], []),
+  );
+  if (!(events.round_end?.length)) {
+    console.warn("[parseDemo] parseEvents empty — fallback parseEvent per type");
+    events = {};
+    for (const name of EVENT_NAMES) {
+      events[name] = parser.parseEvent(demo, name, ["X", "Y", "Z"], []) ?? [];
+    }
+  }
+  const ev = (name: string) => events[name] ?? [];
+  console.log(
+    `[parseDemo] events ${((Date.now() - t0) / 1000).toFixed(1)}s map=${map} round_end=${ev("round_end").length}`,
+  );
 
   const roundStarts = ev("round_start").map((e) => num(e.tick));
   const freezeEnds = ev("round_freeze_end").map((e) => num(e.tick));
@@ -171,7 +235,7 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
   }
 
   // Drop leading amalgam rounds (warmup/knife) that swallow thousands of ticks / kills.
-  const deaths = ev("player_death", ["X", "Y", "Z"]);
+  const deaths = ev("player_death");
   let firstReal = allBounds.findIndex((b) => {
     const live = b.endTick - b.freezeEndTick;
     if (live <= 0 || live > MAX_LIVE_TICKS) return false;
@@ -185,11 +249,15 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
   if (!bounds.length) throw new Error("No rounds found in demo");
 
   // ---- Player ticks ----
+  const t1 = Date.now();
   const wantedTicks: number[] = [];
   for (const b of bounds) {
     for (let t = b.startTick; t < b.nextStartTick; t += SAMPLE_STEP) wantedTicks.push(t);
   }
   const tickRows = parser.parseTicks(demo, TICK_PROPS, wantedTicks);
+  console.log(
+    `[parseDemo] ticks ${((Date.now() - t1) / 1000).toFixed(1)}s samples=${wantedTicks.length}`,
+  );
   const rowsByTick = new Map<number, Row[]>();
   for (const r of tickRows) {
     if (!sideOfTeamNum(r.team_num)) continue;
@@ -300,9 +368,9 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
     return i;
   };
 
-  // ---- Events ----
+  // ---- Events (already batched) ----
   const hurts = ev("player_hurt");
-  const plants = ev("bomb_planted", ["X", "Y"]);
+  const plants = ev("bomb_planted");
   const defuses = ev("bomb_defused").map((e) => num(e.tick));
   const explodes = ev("bomb_exploded").map((e) => num(e.tick));
   const smokeEnd = new Map(ev("smokegrenade_expired").map((e) => [num(e.entityid), num(e.tick)]));
@@ -322,7 +390,10 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
     { type: "he", rows: ev("hegrenade_detonate"), end: (r) => num(r.tick) + tickRate / 2 },
   ];
 
-  const grenadeRows = parser.parseGrenades(demo);
+  const t2 = Date.now();
+  // false = projectiles only (faster / less memory)
+  const grenadeRows = parser.parseGrenades(demo, null, false);
+  console.log(`[parseDemo] grenades ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
   // ---- Build rounds ----
   const rounds: ReplayRound[] = [];
@@ -504,6 +575,10 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
   if (rounds.every((r) => r.samples === 0)) {
     throw new Error("Démo parsée mais sans positions joueurs (fichier corrompu ?).");
   }
+
+  console.log(
+    `[parseDemo] done ${((Date.now() - t0) / 1000).toFixed(1)}s rounds=${rounds.length} players=${players.length}`,
+  );
 
   return {
     version: 2,
