@@ -15,6 +15,8 @@ export type MatchRow = {
   mapName: string | null;
   parseStatus: string;
   parseError: string | null;
+  parseProgress?: number | null;
+  parseStage?: string | null;
   scoreA: number | null;
   scoreB: number | null;
   teamAName: string | null;
@@ -348,7 +350,31 @@ export function MatchList({
                     <td className="px-5 py-3.5">
                       <span className={`badge badge-${m.parseStatus}`}>
                         {STATUS_LABEL[m.parseStatus] ?? m.parseStatus}
+                        {m.parseStatus === "processing" && m.parseProgress != null
+                          ? ` ${Math.min(99, m.parseProgress)}%`
+                          : ""}
                       </span>
+                      {analyzing && (
+                        <div className="mt-1.5 w-28">
+                          <div className="h-1 overflow-hidden rounded-full bg-[var(--border)]">
+                            <div
+                              className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-500"
+                              style={{
+                                width: `${
+                                  m.parseStatus === "pending"
+                                    ? 4
+                                    : Math.max(4, Math.min(99, m.parseProgress ?? 4))
+                                }%`,
+                              }}
+                            />
+                          </div>
+                          {m.parseStage ? (
+                            <div className="muted mt-1 max-w-[8rem] truncate text-[10px]" title={m.parseStage}>
+                              {m.parseStage}
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
                       {m.parseError && (
                         <div
                           className="mt-1 max-w-xs truncate text-xs text-[var(--danger)]"
@@ -357,7 +383,6 @@ export function MatchList({
                           {humanizeParseError(m.parseError)}
                         </div>
                       )}
-                      {analyzing && <div className="muted mt-1 text-[10px]">Actualisation…</div>}
                     </td>
                     <td className="px-5 py-3.5">
                       <div className="flex items-center justify-end gap-2">

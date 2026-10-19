@@ -26,7 +26,13 @@ export async function POST(_req: Request, ctx: Ctx) {
 
     const [match] = await db
       .update(matches)
-      .set({ parseStatus: "pending", parseError: null, updatedAt: new Date() })
+      .set({
+        parseStatus: "pending",
+        parseError: null,
+        parseProgress: 0,
+        parseStage: "En file d'attente",
+        updatedAt: new Date(),
+      })
       .where(and(eq(matches.id, id), eq(matches.teamId, user.team.id)))
       .returning();
     if (!match) return jsonError("Match introuvable", 404);

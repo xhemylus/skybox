@@ -43,6 +43,17 @@ async function recoverStaleJobs() {
     );
 }
 
+async function setProgress(matchId: string, pct: number, stage: string) {
+  await db
+    .update(matches)
+    .set({
+      parseProgress: Math.max(0, Math.min(100, Math.round(pct))),
+      parseStage: stage,
+      updatedAt: new Date(),
+    })
+    .where(eq(matches.id, matchId));
+}
+
 async function processJob(job: ParseJob) {
   const started = Date.now();
   console.log(`[parse] start ${job.matchId}`);
@@ -68,9 +79,16 @@ async function processJob(job: ParseJob) {
 
   await db
     .update(matches)
-    .set({ parseStatus: "processing", parseError: null, updatedAt: new Date() })
+    .set({
+      parseStatus: "processing",
+      parseError: null,
+      parseProgress: 2,
+      parseStage: "Démarrage…",
+      updatedAt: new Date(),
+    })
     .where(eq(matches.id, job.matchId));
 
+  await setProgress(job.matchId, 5, "Téléchargement de la démo…");
   let buffer: Buffer;
   try {
     buffer = await downloadToBuffer(existing.demoKey);
@@ -79,7 +97,17 @@ async function processJob(job: ParseJob) {
     throw new Error(`Fichier démo introuvable sur le stockage (${detail})`);
   }
 
-  const replay = parseDemo(buffer, { filename: existing.filename });
+  let lastPct = 5;
+  const replay = parseDemo(buffer, {
+    filename: existing.filename,
+    onProgress: (pct, stage) => {
+      // Map parseDemo 0–92 → overall 10–88
+      const mapped = 10 + Math.round((pct / 100) * 78);
+      if (mapped < lastPct + 2 && mapped < 88) return;
+      lastPct = mapped;
+      void setProgress(job.matchId, mapped, stage);
+    },
+  });
 
   // Keep manual team names across reparse when locked
   if (existing.teamNamesLocked) {
@@ -89,12 +117,14 @@ async function processJob(job: ParseJob) {
     applyPreferExisting(replay, existing.teamAName, existing.teamBName);
   }
 
+  await setProgress(job.matchId, 90, "Enregistrement du replay…");
   const replayKey = `parsed/${existing.teamId}/${existing.id}/replay.json.gz`;
   await uploadObject(replayKey, zlib.gzipSync(JSON.stringify(replay)), {
     contentType: "application/json",
     contentEncoding: "gzip",
   });
 
+  await setProgress(job.matchId, 95, "Écriture en base…");
   await db.delete(rounds).where(eq(rounds.matchId, job.matchId));
   await db.delete(playerMatchStats).where(eq(playerMatchStats.matchId, job.matchId));
 
@@ -128,6 +158,8 @@ async function processJob(job: ParseJob) {
     .set({
       parseStatus: "ready",
       parseError: null,
+      parseProgress: 100,
+      parseStage: "Terminé",
       replayKey,
       mapName: replay.map,
       scoreA: last.scoreA,

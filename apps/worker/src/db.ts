@@ -26,6 +26,8 @@ export const matches = pgTable("matches", {
   mapName: text("map_name"),
   parseStatus: parseStatusEnum("parse_status").notNull(),
   parseError: text("parse_error"),
+  parseProgress: integer("parse_progress").notNull().default(0),
+  parseStage: text("parse_stage"),
   scoreA: integer("score_a"),
   scoreB: integer("score_b"),
   teamAName: text("team_a_name"),

@@ -115,6 +115,10 @@ export const matches = pgTable(
     playedAt: timestamp("played_at", { withTimezone: true }),
     parseStatus: parseStatusEnum("parse_status").notNull().default("pending"),
     parseError: text("parse_error"),
+    /** 0–100 while parsing; UI progress bar. */
+    parseProgress: integer("parse_progress").notNull().default(0),
+    /** Short FR label for current parse step. */
+    parseStage: text("parse_stage"),
     scoreA: integer("score_a"),
     scoreB: integer("score_b"),
     teamAName: text("team_a_name"),

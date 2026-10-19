@@ -148,10 +148,23 @@ export function decompressDemo(buf: Buffer): Buffer {
   return buf;
 }
 
-export function parseDemo(input: Buffer, opts?: { filename?: string | null }): ReplayData {
+export type ParseProgressFn = (pct: number, stage: string) => void;
+
+export function parseDemo(
+  input: Buffer,
+  opts?: { filename?: string | null; onProgress?: ParseProgressFn },
+): ReplayData {
+  const report = (pct: number, stage: string) => {
+    try {
+      opts?.onProgress?.(Math.max(0, Math.min(100, Math.round(pct))), stage);
+    } catch {
+      /* ignore progress errors */
+    }
+  };
   if (!input?.length || input.length < MIN_DEMO_BYTES) {
     throw new Error("Fichier trop petit pour être une démo CS2 complète.");
   }
+  report(8, "Décompression…");
   let demo: Buffer;
   try {
     demo = decompressDemo(input);
@@ -168,11 +181,13 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
   }
 
   const t0 = Date.now();
+  report(12, "Lecture de l'en-tête…");
   const header = parser.parseHeader(demo);
   const map = normalizeMapName(str(header.map_name));
   const tickRate = 64;
 
   // One pass for all events (each parseEvent() re-reads the whole demo).
+  report(18, "Analyse des events…");
   let events = groupEvents(
     parser.parseEvents(demo, [...EVENT_NAMES], ["X", "Y", "Z"], []),
   );
@@ -184,6 +199,7 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
     }
   }
   const ev = (name: string) => events[name] ?? [];
+  report(42, "Events OK");
   console.log(
     `[parseDemo] events ${((Date.now() - t0) / 1000).toFixed(1)}s map=${map} round_end=${ev("round_end").length}`,
   );
@@ -249,12 +265,14 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
   if (!bounds.length) throw new Error("No rounds found in demo");
 
   // ---- Player ticks ----
+  report(48, "Positions joueurs…");
   const t1 = Date.now();
   const wantedTicks: number[] = [];
   for (const b of bounds) {
     for (let t = b.startTick; t < b.nextStartTick; t += SAMPLE_STEP) wantedTicks.push(t);
   }
   const tickRows = parser.parseTicks(demo, TICK_PROPS, wantedTicks);
+  report(72, "Positions OK");
   console.log(
     `[parseDemo] ticks ${((Date.now() - t1) / 1000).toFixed(1)}s samples=${wantedTicks.length}`,
   );
@@ -390,12 +408,15 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
     { type: "he", rows: ev("hegrenade_detonate"), end: (r) => num(r.tick) + tickRate / 2 },
   ];
 
+  report(76, "Trajectoires util…");
   const t2 = Date.now();
   // false = projectiles only (faster / less memory)
   const grenadeRows = parser.parseGrenades(demo, null, false);
+  report(82, "Util OK");
   console.log(`[parseDemo] grenades ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
   // ---- Build rounds ----
+  report(85, "Construction du replay…");
   const rounds: ReplayRound[] = [];
   let scoreA = 0;
   let scoreB = 0;
@@ -576,6 +597,7 @@ export function parseDemo(input: Buffer, opts?: { filename?: string | null }): R
     throw new Error("Démo parsée mais sans positions joueurs (fichier corrompu ?).");
   }
 
+  report(92, "Replay prêt");
   console.log(
     `[parseDemo] done ${((Date.now() - t0) / 1000).toFixed(1)}s rounds=${rounds.length} players=${players.length}`,
   );

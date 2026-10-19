@@ -65,6 +65,8 @@ export async function MatchReplayView({
         matchId={match.id}
         status={match.parseStatus}
         error={match.parseError}
+        progress={match.parseProgress}
+        stage={match.parseStage}
         canReparse={canReparse}
       />
     );
