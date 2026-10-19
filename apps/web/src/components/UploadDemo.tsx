@@ -16,7 +16,8 @@ type UploadJob = {
 };
 
 const ACCEPT_EXT = [".dem", ".dem.zst", ".dem.gz", ".zst", ".gz"];
-const CONCURRENCY = 3;
+/** Always 1 on small VPS — parallel uploads freeze the server (OOM). */
+const CONCURRENCY = 1;
 
 function isDemoFile(name: string) {
   const n = name.toLowerCase();
@@ -77,9 +78,16 @@ export function UploadDemo() {
         if (index >= initial.length) return;
         const job = initial[index];
         patchJob(job.id, { status: "uploading", progress: 0 });
-        const result = await uploadOne(job.file, (pct) => patchJob(job.id, { progress: pct }));
+        let result = await uploadOne(job.file, (pct) => patchJob(job.id, { progress: pct }));
+        // Server upload lock — retry a few times if another import is finishing
+        for (let retry = 0; !result.ok && result.status === 429 && retry < 8; retry++) {
+          patchJob(job.id, { status: "queued", progress: 0, error: "Serveur occupé, nouvelle tentative…" });
+          await new Promise((r) => setTimeout(r, 4000));
+          patchJob(job.id, { status: "uploading", progress: 0, error: undefined });
+          result = await uploadOne(job.file, (pct) => patchJob(job.id, { progress: pct }));
+        }
         if (result.ok) {
-          patchJob(job.id, { status: "done", progress: 100, matchId: result.matchId });
+          patchJob(job.id, { status: "done", progress: 100, matchId: result.matchId, error: undefined });
           refreshed = true;
         } else if (result.status === 409) {
           patchJob(job.id, {
@@ -90,6 +98,10 @@ export function UploadDemo() {
           });
         } else {
           patchJob(job.id, { status: "error", error: result.error });
+        }
+        // Pause so parse/RAM can breathe between files
+        if (index < initial.length - 1) {
+          await new Promise((r) => setTimeout(r, 1500));
         }
       }
     }
@@ -155,7 +167,8 @@ export function UploadDemo() {
         <div>
           <div className="text-[15px] font-medium tracking-wide">Uploader des démos</div>
           <div className="muted mt-1 text-sm">
-            Plusieurs fichiers .dem / .dem.zst / .dem.gz — glisse-les ou sélectionne-les
+            .dem / .dem.zst / .dem.gz — plusieurs fichiers OK, envoyés un par un (évite de planter le
+            serveur)
           </div>
         </div>
         <div className="flex items-center gap-4">

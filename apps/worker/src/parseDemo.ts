@@ -26,24 +26,26 @@ import {
   type UtilType,
 } from "@skybox/shared";
 
+type DemoSrc = string | Buffer;
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const parser = require("@laihoe/demoparser2") as {
-  parseHeader: (d: Buffer) => Record<string, string>;
+  parseHeader: (d: DemoSrc) => Record<string, string>;
   parseEvent: (
-    d: Buffer,
+    d: DemoSrc,
     name: string,
     playerExtra?: string[] | null,
     otherExtra?: string[] | null,
   ) => Row[];
   parseEvents: (
-    d: Buffer,
+    d: DemoSrc,
     names?: string[] | null,
     playerExtra?: string[] | null,
     otherExtra?: string[] | null,
   ) => unknown;
-  parseTicks: (d: Buffer, props: string[], ticks?: number[] | null) => Row[];
+  parseTicks: (d: DemoSrc, props: string[], ticks?: number[] | null) => Row[];
   parseGrenades: (
-    d: Buffer,
+    d: DemoSrc,
     extra?: string[] | null,
     grenades?: boolean | null,
   ) => Row[];
@@ -51,8 +53,14 @@ const parser = require("@laihoe/demoparser2") as {
 
 type Row = Record<string, unknown>;
 
-/** ~8 Hz at 64-tick — enough for 2D review, much faster parse. */
-const SAMPLE_STEP = 8;
+/**
+ * Sample every N ticks (~64/N Hz). Higher = less RAM/CPU (VPS-friendly).
+ * Override with PARSE_SAMPLE_STEP (4–32). Default 16 ≈ 4 Hz.
+ */
+const SAMPLE_STEP = Math.max(
+  4,
+  Math.min(32, Number(process.env.PARSE_SAMPLE_STEP ?? "16") || 16),
+);
 
 const EVENT_NAMES = [
   "round_start",
@@ -151,7 +159,7 @@ export function decompressDemo(buf: Buffer): Buffer {
 export type ParseProgressFn = (pct: number, stage: string) => void;
 
 export function parseDemo(
-  input: Buffer,
+  input: DemoSrc,
   opts?: { filename?: string | null; onProgress?: ParseProgressFn },
 ): ReplayData {
   const report = (pct: number, stage: string) => {
@@ -161,23 +169,30 @@ export function parseDemo(
       /* ignore progress errors */
     }
   };
-  if (!input?.length || input.length < MIN_DEMO_BYTES) {
-    throw new Error("Fichier trop petit pour être une démo CS2 complète.");
-  }
-  report(8, "Décompression…");
-  let demo: Buffer;
-  try {
-    demo = decompressDemo(input);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : "decompress failed";
-    throw new Error(`Impossible de décompresser la démo (${detail}).`);
-  }
-  if (demo.length < MIN_DEMO_BYTES) {
-    throw new Error("Fichier trop petit pour être une démo CS2 complète.");
-  }
-  const magic = demo.subarray(0, 8).toString("latin1");
-  if (!magic.startsWith("PBDEMS2")) {
-    throw new Error(`Not a CS2 demo (magic=${JSON.stringify(magic)})`);
+
+  let demo: DemoSrc;
+  if (typeof input === "string") {
+    // Path on disk — demoparser2 reads from file (no second copy in JS heap).
+    demo = input;
+    report(8, "Lecture fichier…");
+  } else {
+    if (!input?.length || input.length < MIN_DEMO_BYTES) {
+      throw new Error("Fichier trop petit pour être une démo CS2 complète.");
+    }
+    report(8, "Décompression…");
+    try {
+      demo = decompressDemo(input);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "decompress failed";
+      throw new Error(`Impossible de décompresser la démo (${detail}).`);
+    }
+    if (demo.length < MIN_DEMO_BYTES) {
+      throw new Error("Fichier trop petit pour être une démo CS2 complète.");
+    }
+    const magic = demo.subarray(0, 8).toString("latin1");
+    if (!magic.startsWith("PBDEMS2")) {
+      throw new Error(`Not a CS2 demo (magic=${JSON.stringify(magic)})`);
+    }
   }
 
   const t0 = Date.now();
@@ -271,11 +286,12 @@ export function parseDemo(
   for (const b of bounds) {
     for (let t = b.startTick; t < b.nextStartTick; t += SAMPLE_STEP) wantedTicks.push(t);
   }
-  const tickRows = parser.parseTicks(demo, TICK_PROPS, wantedTicks);
+  let tickRows = parser.parseTicks(demo, TICK_PROPS, wantedTicks) as Row[];
   report(72, "Positions OK");
   console.log(
-    `[parseDemo] ticks ${((Date.now() - t1) / 1000).toFixed(1)}s samples=${wantedTicks.length}`,
+    `[parseDemo] ticks ${((Date.now() - t1) / 1000).toFixed(1)}s samples=${wantedTicks.length} step=${SAMPLE_STEP}`,
   );
+  wantedTicks.length = 0;
   const rowsByTick = new Map<number, Row[]>();
   for (const r of tickRows) {
     if (!sideOfTeamNum(r.team_num)) continue;
@@ -310,6 +326,8 @@ export function parseDemo(
       if (side && clan) clanVotes[side].push(clan);
     }
   }
+  // Drop dense array — Map is enough for the rest of the parse.
+  tickRows = [];
 
   const clanOfSide: Partial<Record<Side, string>> = {
     CT: pickClanName(clanVotes.CT) ?? undefined,
@@ -411,7 +429,7 @@ export function parseDemo(
   report(76, "Trajectoires util…");
   const t2 = Date.now();
   // false = projectiles only (faster / less memory)
-  const grenadeRows = parser.parseGrenades(demo, null, false);
+  let grenadeRows = parser.parseGrenades(demo, null, false) as Row[];
   report(82, "Util OK");
   console.log(`[parseDemo] grenades ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
@@ -588,6 +606,7 @@ export function parseDemo(
   });
 
   attachGrenadePaths(grenadeRows, rounds, pIdx);
+  grenadeRows = [];
 
   const stats = computeStats(players, rounds, hurts, pIdx, tickRate);
 

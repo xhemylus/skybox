@@ -1,18 +1,21 @@
 [Unit]
 Description=DemoReviewer web (Next.js)
-Requires=demoreviewer-infra.service
 After=network.target docker.service demoreviewer-infra.service
-Wants=docker.service
+Wants=docker.service demoreviewer-infra.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/demoreviewer
 Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=512
 EnvironmentFile=/opt/demoreviewer/.env
 ExecStartPre=/bin/sleep 2
 ExecStart=/usr/bin/npm run start -w @skybox/web
 Restart=always
 RestartSec=5
+MemoryHigh=700M
+MemoryMax=900M
+OOMScoreAdjust=200
 
 [Install]
 WantedBy=multi-user.target

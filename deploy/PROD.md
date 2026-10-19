@@ -269,6 +269,29 @@ Logs sur le VPS : `/opt/demoreviewer/logs/deploy-*.log`
 
 ---
 
+## 11. RAM / parse (VPS qui “plante” pendant une analyse)
+
+Le parse CS2 est gourmand. Sur un VPS 1–2 Go, sans swap le noyau OOM-kill parfois **tout** (ssh inclus).
+
+```bash
+# 2 Go de swap (une fois)
+fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+free -h
+
+# Recharger l’unit worker (MemoryMax + PARSE_SAMPLE_STEP)
+cp /opt/demoreviewer/deploy/demoreviewer-worker.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl restart demoreviewer-worker
+```
+
+Optionnel dans `.env` : `PARSE_SAMPLE_STEP=20` (4–32, plus haut = moins de RAM, replay un peu plus “saccadé”).
+
+---
+
 ## Dépannage rapide
 
 | Symptôme | Check |
@@ -277,3 +300,4 @@ Logs sur le VPS : `/opt/demoreviewer/logs/deploy-*.log`
 | Steam refuse login | `APP_URL` = URL HTTPS exacte (pas de slash final bizarre) |
 | Upload OK mais jamais prêt | `journalctl -u demoreviewer-worker -n 100` + Redis up |
 | 502 Bad Gateway | `systemctl status demoreviewer-web` — écoute sur :3000 ? |
+| VPS freeze au parse | Manque de RAM — §11 swap + redéploie worker ; `dmesg \| grep -i oom` |

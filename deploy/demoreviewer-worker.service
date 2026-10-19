@@ -1,18 +1,24 @@
 [Unit]
 Description=DemoReviewer worker (BullMQ parse)
-Requires=demoreviewer-infra.service
 After=network.target docker.service demoreviewer-infra.service
-Wants=docker.service
+Wants=docker.service demoreviewer-infra.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/demoreviewer
 Environment=NODE_ENV=production
+Environment=PARSE_SAMPLE_STEP=16
+# Cap Node heap so a fat demo kills the worker, not the whole VPS
+Environment=NODE_OPTIONS=--max-old-space-size=768
 EnvironmentFile=/opt/demoreviewer/.env
 ExecStartPre=/bin/sleep 2
 ExecStart=/usr/bin/npm run start -w @skybox/worker
 Restart=always
 RestartSec=5
+# Soft/hard cgroup limits (adjust if the VPS has ≥4 Go RAM)
+MemoryHigh=900M
+MemoryMax=1100M
+OOMScoreAdjust=500
 
 [Install]
 WantedBy=multi-user.target

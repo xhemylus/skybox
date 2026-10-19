@@ -50,3 +50,22 @@ export function clientIp(req: Request): string {
   if (real) return real.trim();
   return "unknown";
 }
+
+/** Redis NX lock. Returns true if acquired. */
+export async function acquireLock(key: string, ttlSec: number): Promise<boolean> {
+  try {
+    const ok = await getRedis().set(key, "1", "EX", ttlSec, "NX");
+    return ok === "OK";
+  } catch (err) {
+    console.error("[lock] acquire failed — denying for safety", err);
+    return false;
+  }
+}
+
+export async function releaseLock(key: string): Promise<void> {
+  try {
+    await getRedis().del(key);
+  } catch (err) {
+    console.error("[lock] release failed", err);
+  }
+}

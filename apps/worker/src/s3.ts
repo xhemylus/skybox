@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import {
   CreateBucketCommand,
   GetObjectCommand,
@@ -19,7 +20,7 @@ export const s3 = new S3Client({
 
 let bucketReady: Promise<void> | null = null;
 
-async function ensureBucket() {
+export async function ensureBucket() {
   if (!bucketReady) {
     bucketReady = (async () => {
       try {
@@ -47,7 +48,7 @@ export async function downloadToBuffer(key: string): Promise<Buffer> {
 
 export async function uploadObject(
   key: string,
-  body: Buffer,
+  body: Buffer | Readable,
   opts: { contentType: string; contentEncoding?: string },
 ) {
   await ensureBucket();

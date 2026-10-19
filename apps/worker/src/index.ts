@@ -1,3 +1,5 @@
+import path from "node:path";
+import { Readable } from "node:stream";
 import zlib from "node:zlib";
 import { Worker } from "bullmq";
 import { and, eq, inArray, lt } from "drizzle-orm";
@@ -9,12 +11,13 @@ import {
   type ReplayData,
 } from "@skybox/shared";
 import { db, matches, playerMatchStats, rounds } from "./db";
+import { downloadToFile, materializeDemoFile, withTempDir } from "./demoFile";
 import { env } from "./env";
-import { parseDemo } from "./parseDemo";
-import { downloadToBuffer, uploadObject } from "./s3";
+import { parseDemoAsync } from "./runParse";
+import { uploadObject } from "./s3";
 
 /** Matches stuck in "processing" longer than this are treated as crashed workers. */
-const STALE_PROCESSING_MS = 20 * 60 * 1000;
+const STALE_PROCESSING_MS = 8 * 60 * 1000;
 
 async function recoverStaleJobs() {
   const cutoff = new Date(Date.now() - STALE_PROCESSING_MS);
@@ -88,93 +91,99 @@ async function processJob(job: ParseJob) {
     })
     .where(eq(matches.id, job.matchId));
 
-  await setProgress(job.matchId, 5, "Téléchargement de la démo…");
-  let buffer: Buffer;
-  try {
-    buffer = await downloadToBuffer(existing.demoKey);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : "download failed";
-    throw new Error(`Fichier démo introuvable sur le stockage (${detail})`);
-  }
+  await withTempDir(async (dir) => {
+    await setProgress(job.matchId, 5, "Téléchargement de la démo…");
+    const rawPath = path.join(dir, "download.bin");
+    try {
+      await downloadToFile(existing.demoKey, rawPath);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "download failed";
+      throw new Error(`Fichier démo introuvable sur le stockage (${detail})`);
+    }
 
-  let lastPct = 5;
-  const replay = parseDemo(buffer, {
-    filename: existing.filename,
-    onProgress: (pct, stage) => {
-      // Map parseDemo 0–92 → overall 10–88
+    await setProgress(job.matchId, 8, "Préparation fichier…");
+    const demoPath = await materializeDemoFile(rawPath, dir);
+
+    let lastPct = 8;
+    // parseDemo is CPU-sync (demoparser2). Run it in a worker_thread so
+    // setProgress can flush to Postgres — otherwise the UI stays frozen at 5%.
+    const replay = await parseDemoAsync(demoPath, existing.filename, async (pct, stage) => {
       const mapped = 10 + Math.round((pct / 100) * 78);
       if (mapped < lastPct + 2 && mapped < 88) return;
       lastPct = mapped;
-      void setProgress(job.matchId, mapped, stage);
-    },
-  });
+      await setProgress(job.matchId, mapped, stage);
+    });
 
-  // Keep manual team names across reparse when locked
-  if (existing.teamNamesLocked) {
-    if (existing.teamAName) replay.teams[0].name = existing.teamAName;
-    if (existing.teamBName) replay.teams[1].name = existing.teamBName;
-  } else {
-    applyPreferExisting(replay, existing.teamAName, existing.teamBName);
-  }
+    // Keep manual team names across reparse when locked
+    if (existing.teamNamesLocked) {
+      if (existing.teamAName) replay.teams[0].name = existing.teamAName;
+      if (existing.teamBName) replay.teams[1].name = existing.teamBName;
+    } else {
+      applyPreferExisting(replay, existing.teamAName, existing.teamBName);
+    }
 
-  await setProgress(job.matchId, 90, "Enregistrement du replay…");
-  const replayKey = `parsed/${existing.teamId}/${existing.id}/replay.json.gz`;
-  await uploadObject(replayKey, zlib.gzipSync(JSON.stringify(replay)), {
-    contentType: "application/json",
-    contentEncoding: "gzip",
-  });
+    await setProgress(job.matchId, 90, "Enregistrement du replay…");
+    const replayKey = `parsed/${existing.teamId}/${existing.id}/replay.json.gz`;
+    const json = JSON.stringify(replay);
+    const gzip = zlib.createGzip({ level: 4 });
+    const body = Readable.from([json]).pipe(gzip);
+    await uploadObject(replayKey, body, {
+      contentType: "application/json",
+      contentEncoding: "gzip",
+    });
 
-  await setProgress(job.matchId, 95, "Écriture en base…");
-  await db.delete(rounds).where(eq(rounds.matchId, job.matchId));
-  await db.delete(playerMatchStats).where(eq(playerMatchStats.matchId, job.matchId));
+    await setProgress(job.matchId, 95, "Écriture en base…");
+    await db.delete(rounds).where(eq(rounds.matchId, job.matchId));
+    await db.delete(playerMatchStats).where(eq(playerMatchStats.matchId, job.matchId));
 
-  await db.insert(rounds).values(
-    replay.rounds.map((r) => ({
-      matchId: job.matchId,
-      number: r.number,
-      startTick: r.startTick,
-      endTick: r.endTick,
-      winner: r.winnerSide,
-      winnerTeam: r.winnerTeam,
-      reason: r.reason,
-      sideA: r.sideOf.A,
-      buyA: r.buy.A,
-      buyB: r.buy.B,
-      scoreA: r.scoreA,
-      scoreB: r.scoreB,
-      bombSite: r.bomb.site,
-    })),
-  );
-
-  if (replay.stats.length) {
-    await db.insert(playerMatchStats).values(
-      replay.stats.map((s) => ({ matchId: job.matchId, ...s })),
+    await db.insert(rounds).values(
+      replay.rounds.map((r) => ({
+        matchId: job.matchId,
+        number: r.number,
+        startTick: r.startTick,
+        endTick: r.endTick,
+        winner: r.winnerSide,
+        winnerTeam: r.winnerTeam,
+        reason: r.reason,
+        sideA: r.sideOf.A,
+        buyA: r.buy.A,
+        buyB: r.buy.B,
+        scoreA: r.scoreA,
+        scoreB: r.scoreB,
+        bombSite: r.bomb.site,
+      })),
     );
-  }
 
-  const last = replay.rounds[replay.rounds.length - 1];
-  await db
-    .update(matches)
-    .set({
-      parseStatus: "ready",
-      parseError: null,
-      parseProgress: 100,
-      parseStage: "Terminé",
-      replayKey,
-      mapName: replay.map,
-      scoreA: last.scoreA,
-      scoreB: last.scoreB,
-      teamAName: replay.teams[0].name,
-      teamBName: replay.teams[1].name,
-      updatedAt: new Date(),
-    })
-    .where(eq(matches.id, job.matchId));
+    if (replay.stats.length) {
+      await db.insert(playerMatchStats).values(
+        replay.stats.map((s) => ({ matchId: job.matchId, ...s })),
+      );
+    }
 
-  console.log(
-    `[parse] ready ${job.matchId} map=${replay.map} rounds=${replay.rounds.length} ` +
-      `score=${last.scoreA}-${last.scoreB} teams=${replay.teams[0].name} vs ${replay.teams[1].name} ` +
-      `in ${((Date.now() - started) / 1000).toFixed(1)}s`,
-  );
+    const last = replay.rounds[replay.rounds.length - 1];
+    await db
+      .update(matches)
+      .set({
+        parseStatus: "ready",
+        parseError: null,
+        parseProgress: 100,
+        parseStage: "Terminé",
+        replayKey,
+        mapName: replay.map,
+        scoreA: last.scoreA,
+        scoreB: last.scoreB,
+        teamAName: replay.teams[0].name,
+        teamBName: replay.teams[1].name,
+        updatedAt: new Date(),
+      })
+      .where(eq(matches.id, job.matchId));
+
+    console.log(
+      `[parse] ready ${job.matchId} map=${replay.map} rounds=${replay.rounds.length} ` +
+        `score=${last.scoreA}-${last.scoreB} teams=${replay.teams[0].name} vs ${replay.teams[1].name} ` +
+        `in ${((Date.now() - started) / 1000).toFixed(1)}s`,
+    );
+  });
 }
 
 function applyPreferExisting(
