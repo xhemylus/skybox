@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { TeamRole } from "@skybox/shared";
 
 const ROLE_OPTIONS: { value: TeamRole; label: string }[] = [
@@ -11,6 +12,7 @@ const ROLE_OPTIONS: { value: TeamRole; label: string }[] = [
 ];
 
 export function InviteForm({ actorRole }: { actorRole: TeamRole }) {
+  const router = useRouter();
   const assignable = useMemo(() => {
     const rank: Record<TeamRole, number> = {
       player: 1,
@@ -26,33 +28,65 @@ export function InviteForm({ actorRole }: { actorRole: TeamRole }) {
 
   const [steamId, setSteamId] = useState("");
   const [role, setRole] = useState<TeamRole>("player");
-  const [url, setUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  async function onSubmit(e: FormEvent) {
+  async function addDirect(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setUrl(null);
-    setCopied(false);
-    const res = await fetch("/api/invites", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ steamId: steamId.trim() || undefined, role }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setError(data.error ?? "Erreur");
-      return;
+    setOkMsg(null);
+    setInviteUrl(null);
+    setBusy(true);
+    try {
+      const res = await fetch("/api/team/members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ steamId: steamId.trim(), role }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Erreur");
+      const name = data.member?.name || data.member?.steamId || "Membre";
+      setOkMsg(`${name} ajouté à l'équipe. Il peut se connecter avec Steam tout de suite.`);
+      setSteamId("");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur");
+    } finally {
+      setBusy(false);
     }
-    setUrl(data.url);
-    setSteamId("");
+  }
+
+  async function createInviteLink() {
+    setError(null);
+    setOkMsg(null);
+    setInviteUrl(null);
+    setBusy(true);
+    try {
+      const res = await fetch("/api/invites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          steamId: steamId.trim() || undefined,
+          role,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Erreur");
+      setInviteUrl(data.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function copyLink() {
-    if (!url) return;
+    if (!inviteUrl) return;
     try {
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(inviteUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -62,17 +96,18 @@ export function InviteForm({ actorRole }: { actorRole: TeamRole }) {
 
   return (
     <div className="panel p-6">
-      <p className="section-label">Invitations</p>
-      <h2 className="page-title mt-2 text-[1.35rem]">Inviter un membre</h2>
+      <p className="section-label">Roster</p>
+      <h2 className="page-title mt-2 text-[1.35rem]">Ajouter un membre</h2>
       <p className="muted mt-2 text-sm leading-relaxed">
-        SteamID64 optionnel pour réserver l&apos;invite. Sinon, partage le lien — le premier compte Steam
-        qui l&apos;accepte rejoint l&apos;équipe.
+        Colle un SteamID64 (ou URL profil) — le joueur est dans l&apos;équipe tout de suite, sans
+        accepter d&apos;invitation. Au premier login Steam, il est déjà autorisé.
       </p>
-      <form className="mt-5 space-y-3" onSubmit={onSubmit}>
+      <form className="mt-5 space-y-3" onSubmit={addDirect}>
         <input
           className="input"
           type="text"
-          placeholder="7656119… ou URL profil (optionnel)"
+          required
+          placeholder="7656119… ou URL steamcommunity.com/profiles/…"
           value={steamId}
           onChange={(e) => setSteamId(e.target.value)}
         />
@@ -87,13 +122,33 @@ export function InviteForm({ actorRole }: { actorRole: TeamRole }) {
             </option>
           ))}
         </select>
-        <button className="btn btn-primary" type="submit">
-          Créer l&apos;invitation
+        <button className="btn btn-primary w-full" type="submit" disabled={busy}>
+          {busy ? "Ajout…" : "Ajouter à l'équipe"}
         </button>
       </form>
-      {url && (
-        <div className="mt-4 space-y-2 border border-[color-mix(in_oklab,var(--accent)_25%,var(--border))] bg-[color-mix(in_oklab,var(--accent)_5%,transparent)] px-3 py-3">
-          <p className="break-all text-sm text-[var(--accent)]">{url}</p>
+
+      <div className="mt-5 border-t border-[var(--border)] pt-4">
+        <p className="muted text-xs leading-relaxed">
+          Alternative : lien d&apos;invitation (si tu préfères qu&apos;il clique pour rejoindre).
+        </p>
+        <button
+          type="button"
+          className="btn btn-ghost mt-2 w-full"
+          disabled={busy}
+          onClick={createInviteLink}
+        >
+          Créer un lien d&apos;invitation
+        </button>
+      </div>
+
+      {okMsg && (
+        <p className="mt-4 border border-[color-mix(in_oklab,var(--accent)_25%,var(--border))] bg-[color-mix(in_oklab,var(--accent)_5%,transparent)] px-3 py-2 text-sm text-[var(--accent)]">
+          {okMsg}
+        </p>
+      )}
+      {inviteUrl && (
+        <div className="mt-4 space-y-2 border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3">
+          <p className="break-all text-sm text-[var(--muted)]">{inviteUrl}</p>
           <button type="button" className="btn btn-ghost h-8 text-xs" onClick={copyLink}>
             {copied ? "Copié ✓" : "Copier le lien"}
           </button>

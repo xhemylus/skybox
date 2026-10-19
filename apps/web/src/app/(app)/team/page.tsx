@@ -48,7 +48,9 @@ export default async function TeamPage() {
         <header className="mb-8">
           <p className="section-label mb-2">Organisation</p>
           <h1 className="page-title">{user.team.name}</h1>
-          <p className="muted mt-2 text-sm">Roster · 5 joueurs + coach + manager</p>
+          <p className="muted mt-2 text-sm">
+            Ajoute les SteamID directement — pas besoin qu&apos;ils acceptent une invite.
+          </p>
         </header>
         <div className="grid max-w-5xl gap-6 lg:grid-cols-2">
           <div className="panel overflow-hidden">
