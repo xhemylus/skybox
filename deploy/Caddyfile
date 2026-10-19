@@ -1,0 +1,7 @@
+# Remplace review.example.com par ton domaine (celui pointé vers le VPS).
+# Puis : sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+
+review.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}

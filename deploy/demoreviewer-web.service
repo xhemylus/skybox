@@ -1,0 +1,17 @@
+[Unit]
+Description=DemoReviewer web (Next.js)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/demoreviewer
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/demoreviewer/.env
+ExecStart=/usr/bin/npm run start -w @skybox/web
+Restart=always
+RestartSec=5
+# Ne pas exposer Node directement : Caddy → 127.0.0.1:3000
+
+[Install]
+WantedBy=multi-user.target

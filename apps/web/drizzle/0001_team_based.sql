@@ -1,0 +1,21 @@
+ALTER TABLE "matches" RENAME COLUMN "team_ct_name" TO "team_a_name";
+ALTER TABLE "matches" RENAME COLUMN "team_t_name" TO "team_b_name";
+ALTER TABLE "matches" RENAME COLUMN "score_ct" TO "score_a";
+ALTER TABLE "matches" RENAME COLUMN "score_t" TO "score_b";
+ALTER TABLE "rounds" RENAME COLUMN "score_ct" TO "score_a";
+ALTER TABLE "rounds" RENAME COLUMN "score_t" TO "score_b";
+ALTER TABLE "rounds" RENAME COLUMN "buy_type_ct" TO "buy_a";
+ALTER TABLE "rounds" RENAME COLUMN "buy_type_t" TO "buy_b";
+ALTER TABLE "rounds" ADD COLUMN "winner_team" text;
+ALTER TABLE "rounds" ADD COLUMN "side_a" "side" DEFAULT 'CT' NOT NULL;
+ALTER TABLE "rounds" ADD COLUMN "bomb_site" text;
+CREATE INDEX IF NOT EXISTS "rounds_match_idx" ON "rounds" ("match_id");
+
+ALTER TABLE "player_match_stats" DROP COLUMN "side";
+ALTER TABLE "player_match_stats" ADD COLUMN "team" text DEFAULT 'A' NOT NULL;
+ALTER TABLE "player_match_stats" ADD COLUMN "kast" real DEFAULT 0 NOT NULL;
+ALTER TABLE "player_match_stats" ADD COLUMN "first_kills" integer DEFAULT 0 NOT NULL;
+ALTER TABLE "player_match_stats" ADD COLUMN "first_deaths" integer DEFAULT 0 NOT NULL;
+ALTER TABLE "player_match_stats" ADD COLUMN "flash_assists" integer DEFAULT 0 NOT NULL;
+CREATE INDEX IF NOT EXISTS "player_match_stats_match_idx" ON "player_match_stats" ("match_id");
+CREATE INDEX IF NOT EXISTS "player_match_stats_steam_idx" ON "player_match_stats" ("steam_id");

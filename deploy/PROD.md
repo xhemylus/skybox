@@ -1,0 +1,180 @@
+# Mise en prod — DemoReviewer (VPS + DNS déjà prêts)
+
+Prérequis : SSH sur le VPS, DNS A qui pointe déjà vers l’IP, ports 22/80/443 ouverts.
+
+Remplace partout `review.example.com` par **ton** domaine.
+
+---
+
+## 1. Outils sur le VPS (Ubuntu)
+
+```bash
+ssh root@IP_DU_VPS
+
+apt update && apt upgrade -y
+apt install -y git curl ufw
+
+ufw allow OpenSSH
+ufw allow 80
+ufw allow 443
+ufw --force enable
+
+# Docker
+curl -fsSL https://get.docker.com | sh
+
+# Node 22
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt install -y nodejs
+
+# Caddy
+apt install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+apt update && apt install -y caddy
+```
+
+---
+
+## 2. Stockage démos (Cloudflare R2)
+
+1. Cloudflare → R2 → bucket `demoreviewer-prod`
+2. API Token (Object Read & Write)
+3. Note endpoint : `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`
+
+*(Sans R2 : tu peux lancer MinIO via `docker compose up -d minio` en local-only, moins idéal en prod.)*
+
+---
+
+## 3. Clone le repo
+
+```bash
+mkdir -p /opt
+cd /opt
+git clone https://github.com/xhemylus/skybox.git demoreviewer
+cd demoreviewer
+```
+
+Si le repo est privé : utilise un [Deploy Key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) ou un PAT.
+
+---
+
+## 4. Fichier `.env`
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Exemple minimal :
+
+```env
+APP_URL=https://review.example.com
+NODE_ENV=production
+
+DATABASE_URL=postgresql://skybox:CHANGE_ME_DB_PASSWORD@127.0.0.1:5432/skybox
+REDIS_URL=redis://127.0.0.1:6379
+
+S3_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+S3_REGION=auto
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+S3_BUCKET=demoreviewer-prod
+S3_FORCE_PATH_STYLE=false
+
+AUTH_SECRET=<sortie de: openssl rand -hex 32>
+SEED_ADMIN_STEAM_ID=7656119xxxxxxxxxx
+SEED_TEAM_NAME=Nom De Ton Equipe
+
+MAX_DEMO_SIZE_MB=512
+DEMO_RETENTION_DAYS=90
+```
+
+Change aussi le mot de passe Postgres dans `docker-compose.yml` (ou aligne-le avec `DATABASE_URL`).
+
+---
+
+## 5. Postgres + Redis
+
+```bash
+cd /opt/demoreviewer
+# Édite POSTGRES_PASSWORD dans docker-compose.yml si besoin
+docker compose up -d postgres redis
+docker compose ps
+```
+
+Les ports sont bindés sur `127.0.0.1` uniquement.
+
+---
+
+## 6. Install, build, migrate, seed
+
+```bash
+cd /opt/demoreviewer
+npm ci
+npm run build
+npm run db:migrate
+npm run db:seed
+```
+
+---
+
+## 7. Caddy (HTTPS)
+
+```bash
+# Remplace le domaine dans le fichier
+nano deploy/Caddyfile
+
+cp deploy/Caddyfile /etc/caddy/Caddyfile
+systemctl reload caddy
+systemctl status caddy
+```
+
+Caddy obtient le certificat Let’s Encrypt tout seul si le DNS est bon.
+
+---
+
+## 8. Services web + worker
+
+```bash
+cp deploy/demoreviewer-web.service /etc/systemd/system/
+cp deploy/demoreviewer-worker.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now demoreviewer-web demoreviewer-worker
+systemctl status demoreviewer-web demoreviewer-worker
+```
+
+Logs :
+
+```bash
+journalctl -u demoreviewer-web -f
+journalctl -u demoreviewer-worker -f
+```
+
+---
+
+## 9. Vérifications
+
+1. Ouvre `https://review.example.com`
+2. Login Steam (toi = admin via `SEED_ADMIN_STEAM_ID`)
+3. Invite un joueur → `/team`
+4. Upload une démo → attend `Prêt` → replay + lien round
+
+---
+
+## Mises à jour suivantes
+
+```bash
+cd /opt/demoreviewer
+bash deploy/deploy.sh
+```
+
+---
+
+## Dépannage rapide
+
+| Symptôme | Check |
+|----------|--------|
+| Certificat HTTPS KO | DNS A pointe bien vers l’IP ? `dig +short review.example.com` |
+| Steam refuse login | `APP_URL` = URL HTTPS exacte (pas de slash final bizarre) |
+| Upload OK mais jamais prêt | `journalctl -u demoreviewer-worker -n 100` + Redis up |
+| 502 Bad Gateway | `systemctl status demoreviewer-web` — écoute sur :3000 ? |
