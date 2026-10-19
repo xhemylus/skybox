@@ -315,31 +315,33 @@ export function MatchList({
                           )}
                         </div>
                       ) : (
-                        <span className="muted max-w-xs truncate">{m.filename}</span>
+                        <span className="muted block max-w-[16rem] truncate" title={m.filename}>
+                          {m.filename}
+                        </span>
                       )}
                     </td>
-                    <td className="px-5 py-3.5">
+                    <td className="px-5 py-3.5 align-middle">
                       <div className="space-y-1.5">
                         {m.tournament ? (
-                          <div className="text-[12px] text-[var(--text)]">{m.tournament}</div>
+                          <div className="line-clamp-2 text-[12px] text-[var(--text)]">{m.tournament}</div>
                         ) : (
                           <div className="muted text-[12px]">—</div>
                         )}
                         {(m.tags ?? []).length > 0 && (
                           <div className="flex flex-wrap gap-1">
-                            {(m.tags ?? []).slice(0, 4).map((t) => (
+                            {(m.tags ?? []).slice(0, 3).map((t) => (
                               <span key={t} className="badge">
                                 {t}
                               </span>
                             ))}
-                            {(m.tags ?? []).length > 4 && (
-                              <span className="muted text-[10px]">+{(m.tags ?? []).length - 4}</span>
+                            {(m.tags ?? []).length > 3 && (
+                              <span className="muted text-[10px]">+{(m.tags ?? []).length - 3}</span>
                             )}
                           </div>
                         )}
                       </div>
                     </td>
-                    <td className="muted px-5 py-3.5 whitespace-nowrap">
+                    <td className="muted px-5 py-3.5 align-middle whitespace-nowrap">
                       {new Date(m.createdAt).toLocaleDateString("fr-FR", {
                         day: "2-digit",
                         month: "short",
@@ -347,61 +349,70 @@ export function MatchList({
                         minute: "2-digit",
                       })}
                     </td>
-                    <td className="px-5 py-3.5">
-                      <span className={`badge badge-${m.parseStatus}`}>
-                        {STATUS_LABEL[m.parseStatus] ?? m.parseStatus}
-                        {m.parseStatus === "processing" && m.parseProgress != null
-                          ? ` ${Math.min(99, m.parseProgress)}%`
-                          : ""}
-                      </span>
-                      {analyzing && (
-                        <div className="mt-1.5 w-28">
-                          <div className="h-1 overflow-hidden rounded-full bg-[var(--border)]">
-                            <div
-                              className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-500"
-                              style={{
-                                width: `${
-                                  m.parseStatus === "pending"
-                                    ? 4
-                                    : Math.max(4, Math.min(99, m.parseProgress ?? 4))
-                                }%`,
-                              }}
-                            />
-                          </div>
-                          {m.parseStage ? (
-                            <div className="muted mt-1 max-w-[8rem] truncate text-[10px]" title={m.parseStage}>
-                              {m.parseStage}
+                    <td className="px-5 py-3.5 align-middle">
+                      <div className="max-w-[14rem]">
+                        <span className={`badge badge-${m.parseStatus}`}>
+                          {STATUS_LABEL[m.parseStatus] ?? m.parseStatus}
+                          {m.parseStatus === "processing" && m.parseProgress != null
+                            ? ` ${Math.min(99, m.parseProgress)}%`
+                            : ""}
+                        </span>
+                        {analyzing && (
+                          <div className="mt-1.5 w-28">
+                            <div className="h-1 overflow-hidden rounded-full bg-[var(--border)]">
+                              <div
+                                className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-500"
+                                style={{
+                                  width: `${
+                                    m.parseStatus === "pending"
+                                      ? 4
+                                      : Math.max(4, Math.min(99, m.parseProgress ?? 4))
+                                  }%`,
+                                }}
+                              />
                             </div>
-                          ) : null}
-                        </div>
-                      )}
-                      {m.parseError && (
-                        <div
-                          className="mt-1 max-w-xs truncate text-xs text-[var(--danger)]"
-                          title={humanizeParseError(m.parseError)}
-                        >
-                          {humanizeParseError(m.parseError)}
-                        </div>
-                      )}
+                            {m.parseStage ? (
+                              <div
+                                className="muted mt-1 truncate text-[10px]"
+                                title={m.parseStage}
+                              >
+                                {m.parseStage}
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                        {m.parseStatus === "failed" && m.parseError && (
+                          <div
+                            className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-[var(--danger)]"
+                            title={humanizeParseError(m.parseError)}
+                          >
+                            {humanizeParseError(m.parseError)}
+                          </div>
+                        )}
+                      </div>
                     </td>
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center justify-end gap-2">
+                    <td className="px-5 py-3.5 align-middle">
+                      <div className="flex flex-nowrap items-center justify-end gap-2">
                         {ready && (
-                          <Link href={`/m/${m.id}`} className="btn btn-primary">
+                          <Link href={`/m/${m.id}`} className="btn btn-primary shrink-0">
                             Replay
                           </Link>
                         )}
                         {m.parseStatus === "failed" && (
-                          <button type="button" className="btn btn-primary" onClick={() => reparse(m.id)}>
+                          <button
+                            type="button"
+                            className="btn btn-primary shrink-0"
+                            onClick={() => reparse(m.id)}
+                          >
                             Relancer
                           </button>
                         )}
                         {analyzing && (
-                          <Link href={`/m/${m.id}`} className="btn btn-ghost">
+                          <Link href={`/m/${m.id}`} className="btn btn-ghost shrink-0">
                             Suivre
                           </Link>
                         )}
-                        {(ready || canManage) && (
+                        {(ready || m.parseStatus === "failed" || canManage) && (
                           <MatchRowMenu
                             matchId={m.id}
                             parseStatus={m.parseStatus}

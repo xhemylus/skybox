@@ -34,8 +34,14 @@ export function humanizeParseError(raw: string | null | undefined): string {
   if (/out of memory|heap|allocation/i.test(lower)) {
     return "Démo trop lourde pour le serveur (mémoire). Essaie une démo plus courte ou contacte l'admin.";
   }
+  if (/x-amz-decoded-content-length|content-length|aws.?sdk|s3|r2/i.test(lower) && /invalid|undefined|header/i.test(lower)) {
+    return "Échec d'enregistrement du replay sur le stockage. Relance l'analyse.";
+  }
+  if (/accessdenied|invalidaccesskey|signaturedoesnotmatch/i.test(lower)) {
+    return "Accès stockage refusé (credentials R2/S3). Vérifie la config serveur.";
+  }
   // Keep short; truncate huge stacks
-  if (msg.length > 220) return `${msg.slice(0, 200).trim()}…`;
+  if (msg.length > 160) return `${msg.slice(0, 140).trim()}…`;
   return msg;
 }
 

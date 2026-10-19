@@ -34,6 +34,14 @@ export function MatchRowMenu({
     items.push({ kind: "link", key: "replay", href: `/m/${matchId}`, label: "Ouvrir le replay" });
     items.push({ kind: "link", key: "stats", href: `/m/${matchId}/stats`, label: "Stats" });
   }
+  if (parseStatus === "failed") {
+    items.push({
+      kind: "button",
+      key: "reparse",
+      label: "Relancer l'analyse",
+      onSelect: onReparse,
+    });
+  }
   if (canManage) {
     items.push({
       kind: "button",
@@ -41,13 +49,15 @@ export function MatchRowMenu({
       label: "Éditer meta",
       onSelect: onMeta,
     });
-    items.push({
-      kind: "button",
-      key: "reparse",
-      label: parseStatus === "failed" ? "Relancer l'analyse" : "Re-analyser",
-      onSelect: onReparse,
-      disabled: parseStatus === "processing",
-    });
+    if (parseStatus !== "failed") {
+      items.push({
+        kind: "button",
+        key: "reparse",
+        label: "Re-analyser",
+        onSelect: onReparse,
+        disabled: parseStatus === "processing",
+      });
+    }
     items.push({
       kind: "button",
       key: "remove",

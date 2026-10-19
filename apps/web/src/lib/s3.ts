@@ -44,11 +44,13 @@ export async function putObject(
   contentEncoding?: string,
 ) {
   await ensureBucket();
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
   await s3.send(
     new PutObjectCommand({
       Bucket: env.s3.bucket,
       Key: key,
-      Body: body,
+      Body: bytes,
+      ContentLength: bytes.length,
       ContentType: contentType,
       ContentEncoding: contentEncoding,
     }),

@@ -1,5 +1,4 @@
 import path from "node:path";
-import { Readable } from "node:stream";
 import zlib from "node:zlib";
 import { Worker } from "bullmq";
 import { and, eq, inArray, lt } from "drizzle-orm";
@@ -124,10 +123,10 @@ async function processJob(job: ParseJob) {
 
     await setProgress(job.matchId, 90, "Enregistrement du replay…");
     const replayKey = `parsed/${existing.teamId}/${existing.id}/replay.json.gz`;
-    const json = JSON.stringify(replay);
-    const gzip = zlib.createGzip({ level: 4 });
-    const body = Readable.from([json]).pipe(gzip);
-    await uploadObject(replayKey, body, {
+    // Buffer + ContentLength — R2 rejects streamed/chunked bodies
+    // ("Invalid value undefined for header x-amz-decoded-content-length").
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(replay)), { level: 4 });
+    await uploadObject(replayKey, gz, {
       contentType: "application/json",
       contentEncoding: "gzip",
     });
