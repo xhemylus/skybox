@@ -1,0 +1,6 @@
+# Copier sur le VPS (remplace `deploy` par ton user SSH Actions si besoin) :
+#   sudo cp deploy/sudoers.demoreviewer /etc/sudoers.d/demoreviewer
+#   sudo chmod 440 /etc/sudoers.d/demoreviewer
+#   sudo visudo -cf /etc/sudoers.d/demoreviewer
+
+deploy ALL=(root) NOPASSWD: /usr/bin/bash /opt/demoreviewer/deploy/privileged.sh *

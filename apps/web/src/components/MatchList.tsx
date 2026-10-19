@@ -236,7 +236,7 @@ export function MatchList({
           <p className="muted mt-1 text-sm">Élargis les filtres ou ajoute des tags sur les démos.</p>
         </div>
       ) : (
-        <div className="panel overflow-hidden">
+        <div className="panel overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-[var(--border)] text-[10px] tracking-[0.14em] text-[var(--muted)] uppercase">
               <tr>

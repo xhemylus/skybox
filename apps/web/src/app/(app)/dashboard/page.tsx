@@ -13,12 +13,34 @@ export default async function DashboardPage() {
   if (!user.team) redirect("/team");
 
   const rows = await db
-    .select()
+    .select({
+      id: matches.id,
+      filename: matches.filename,
+      mapName: matches.mapName,
+      parseStatus: matches.parseStatus,
+      parseError: matches.parseError,
+      parseProgress: matches.parseProgress,
+      parseStage: matches.parseStage,
+      scoreA: matches.scoreA,
+      scoreB: matches.scoreB,
+      teamAName: matches.teamAName,
+      teamBName: matches.teamBName,
+      tournament: matches.tournament,
+      tags: matches.tags,
+      notes: matches.notes,
+      createdAt: matches.createdAt,
+    })
     .from(matches)
     .where(eq(matches.teamId, user.team.id))
     .orderBy(desc(matches.createdAt));
 
   const readyCount = rows.filter((m) => m.parseStatus === "ready").length;
+
+  // Client components can't receive Date objects from RSC.
+  const list = rows.map((m) => ({
+    ...m,
+    createdAt: m.createdAt.toISOString(),
+  }));
 
   return (
     <div className="h-full overflow-y-auto">
@@ -45,7 +67,7 @@ export default async function DashboardPage() {
           </div>
         )}
 
-        <MatchList matches={rows} canManage={user.role ? canManageTeam(user.role) : false} />
+        <MatchList matches={list} canManage={user.role ? canManageTeam(user.role) : false} />
       </div>
     </div>
   );

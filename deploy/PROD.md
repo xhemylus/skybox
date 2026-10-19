@@ -168,12 +168,104 @@ journalctl -u demoreviewer-worker -f
 
 ---
 
-## Mises à jour suivantes
+## Mises à jour suivantes (manuel)
 
 ```bash
 cd /opt/demoreviewer
 bash deploy/deploy.sh
 ```
+
+---
+
+## 10. Déploiement auto (vraie prod) — GitHub Actions → SSH
+
+À chaque push sur `main`, GitHub SSHe sur le VPS et lance `deploy/deploy.sh` (pull, build, migrate, restart, healthcheck).
+
+### A. User dédié sur le VPS (recommandé)
+
+```bash
+# Sur le VPS (en root)
+adduser --disabled-password --gecos "" deploy
+usermod -aG docker deploy   # si besoin docker compose plus tard
+mkdir -p /home/deploy/.ssh
+# Colle la clé PUBLIQUE du déploiement (voir B) :
+nano /home/deploy/.ssh/authorized_keys
+chmod 700 /home/deploy/.ssh
+chmod 600 /home/deploy/.ssh/authorized_keys
+chown -R deploy:deploy /home/deploy/.ssh
+
+# Droits sur le repo
+chown -R deploy:deploy /opt/demoreviewer
+
+# Sudo limité (restart services uniquement)
+cp /opt/demoreviewer/deploy/sudoers.demoreviewer /etc/sudoers.d/demoreviewer
+chmod 440 /etc/sudoers.d/demoreviewer
+visudo -cf /etc/sudoers.d/demoreviewer
+```
+
+Si tu restes en `root` pour Actions, ignore le sudoers — le workflow fonctionne pareil.
+
+### B. Clé SSH pour GitHub Actions
+
+Sur ton Mac (ou le VPS) :
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-demoreviewer" -f ./demoreviewer-deploy -N ""
+```
+
+- **Privée** (`demoreviewer-deploy`) → secret GitHub `VPS_SSH_KEY` (contenu entier, y compris `BEGIN`/`END`)
+- **Publique** (`demoreviewer-deploy.pub`) → `/home/deploy/.ssh/authorized_keys` (ou root)
+
+Ne committe jamais la clé privée.
+
+### C. Secrets GitHub
+
+Repo → **Settings → Secrets and variables → Actions** :
+
+| Secret | Exemple |
+|--------|---------|
+| `VPS_HOST` | `203.0.113.10` ou hostname |
+| `VPS_USER` | `deploy` (ou `root`) |
+| `VPS_SSH_KEY` | contenu de la clé privée |
+| `VPS_PORT` | `22` (optionnel) |
+
+### D. Accès git sur le VPS
+
+Le user `deploy` doit pouvoir `git pull` le repo. Si privé :
+
+```bash
+# Deploy key en lecture seule liée au repo GitHub
+sudo -u deploy ssh-keygen -t ed25519 -f /home/deploy/.ssh/github_ro -N ""
+# Ajoute github_ro.pub dans GitHub → Settings → Deploy keys (read-only)
+sudo -u deploy bash -c 'cat >> /home/deploy/.ssh/config <<EOF
+Host github.com
+  IdentityFile ~/.ssh/github_ro
+  StrictHostKeyChecking accept-new
+EOF'
+cd /opt/demoreviewer
+sudo -u deploy git remote set-url origin git@github.com:xhemylus/skybox.git
+sudo -u deploy git fetch
+```
+
+### E. Test
+
+1. GitHub → **Actions → Deploy production → Run workflow**
+2. Ou : `git push origin main`
+3. Vérifie le job vert + `https://review.hemylabs.com/api/health`
+
+Logs sur le VPS : `/opt/demoreviewer/logs/deploy-*.log`
+
+### F. Règles de bon sens
+
+- Ne modifie **pas** de fichiers trackés à la main sur le VPS (`deploy.sh` refuse un working tree sale).
+- Les changements d’env restent dans `/opt/demoreviewer/.env` (hors git).
+- Un seul deploy à la fois (lock + concurrency GitHub).
+- En cas d’échec healthcheck : le job échoue ; rollback manuel :
+  ```bash
+  cd /opt/demoreviewer
+  git checkout <sha-précédent>
+  SKIP_PULL=1 bash deploy/deploy.sh
+  ```
 
 ---
 
