@@ -16,44 +16,79 @@ type UploadJob = {
 };
 
 const ACCEPT_EXT = [".dem", ".dem.zst", ".dem.gz", ".zst", ".gz"];
-/** Always 1 on small VPS — parallel uploads freeze the server (OOM). */
-const CONCURRENCY = 1;
+/** Files go straight to object storage, so the web server isn't the bottleneck anymore. */
+const CONCURRENCY = 2;
 
 function isDemoFile(name: string) {
   const n = name.toLowerCase();
   return ACCEPT_EXT.some((ext) => n.endsWith(ext));
 }
 
-function uploadOne(
+type UploadResult =
+  | { ok: true; matchId?: string }
+  | { ok: false; status: number; error: string; matchId?: string };
+
+async function postJson(url: string, body: unknown) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
+function putToStorage(
+  url: string,
+  headers: Record<string, string>,
   file: File,
   onProgress: (pct: number) => void,
-): Promise<{ ok: true; matchId?: string } | { ok: false; status: number; error: string; matchId?: string }> {
+): Promise<boolean> {
   return new Promise((resolve) => {
-    const form = new FormData();
-    form.append("file", file);
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/matches");
+    xhr.open("PUT", url);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     };
-    xhr.onload = () => {
-      const data = JSON.parse(xhr.responseText || "{}");
-      if (xhr.status >= 400) {
-        resolve({
-          ok: false,
-          status: xhr.status,
-          error: data.error ?? "Upload échoué",
-          matchId: data.matchId,
-        });
-        return;
-      }
-      resolve({ ok: true, matchId: data.match?.id });
-    };
-    xhr.onerror = () => {
-      resolve({ ok: false, status: 0, error: "Erreur réseau" });
-    };
-    xhr.send(form);
+    xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
+    xhr.onerror = () => resolve(false);
+    xhr.send(file);
   });
+}
+
+/** Presign → PUT straight to storage → register the match. */
+async function uploadOne(file: File, onProgress: (pct: number) => void): Promise<UploadResult> {
+  try {
+    const presign = await postJson("/api/matches/uploads", { filename: file.name, size: file.size });
+    if (!presign.res.ok) {
+      return { ok: false, status: presign.res.status, error: presign.data.error ?? "Upload refusé" };
+    }
+
+    const { uploadId, url, headers } = presign.data as {
+      uploadId: string;
+      url: string;
+      headers: Record<string, string>;
+    };
+    // Keep the last 1% for the registration call
+    const sent = await putToStorage(url, headers, file, (pct) => onProgress(Math.min(pct, 99)));
+    if (!sent) {
+      return { ok: false, status: 0, error: "Envoi vers le stockage échoué (réseau ou CORS)" };
+    }
+
+    const done = await postJson("/api/matches", { uploadId, filename: file.name });
+    if (!done.res.ok) {
+      return {
+        ok: false,
+        status: done.res.status,
+        error: done.data.error ?? "Upload échoué",
+        matchId: done.data.matchId,
+      };
+    }
+    return { ok: true, matchId: done.data.match?.id };
+  } catch {
+    return { ok: false, status: 0, error: "Erreur réseau" };
+  }
 }
 
 export function UploadDemo() {
@@ -78,14 +113,7 @@ export function UploadDemo() {
         if (index >= initial.length) return;
         const job = initial[index];
         patchJob(job.id, { status: "uploading", progress: 0 });
-        let result = await uploadOne(job.file, (pct) => patchJob(job.id, { progress: pct }));
-        // Server upload lock — retry a few times if another import is finishing
-        for (let retry = 0; !result.ok && result.status === 429 && retry < 8; retry++) {
-          patchJob(job.id, { status: "queued", progress: 0, error: "Serveur occupé, nouvelle tentative…" });
-          await new Promise((r) => setTimeout(r, 4000));
-          patchJob(job.id, { status: "uploading", progress: 0, error: undefined });
-          result = await uploadOne(job.file, (pct) => patchJob(job.id, { progress: pct }));
-        }
+        const result = await uploadOne(job.file, (pct) => patchJob(job.id, { progress: pct }));
         if (result.ok) {
           patchJob(job.id, { status: "done", progress: 100, matchId: result.matchId, error: undefined });
           refreshed = true;
@@ -98,10 +126,6 @@ export function UploadDemo() {
           });
         } else {
           patchJob(job.id, { status: "error", error: result.error });
-        }
-        // Pause so parse/RAM can breathe between files
-        if (index < initial.length - 1) {
-          await new Promise((r) => setTimeout(r, 1500));
         }
       }
     }
@@ -167,8 +191,8 @@ export function UploadDemo() {
         <div>
           <div className="text-[15px] font-medium tracking-wide">Uploader des démos</div>
           <div className="muted mt-1 text-sm">
-            .dem / .dem.zst / .dem.gz — plusieurs fichiers OK, envoyés un par un (évite de planter le
-            serveur)
+            .dem / .dem.zst / .dem.gz — plusieurs fichiers OK, les doublons sont détectés à
+            l&apos;analyse
           </div>
         </div>
         <div className="flex items-center gap-4">

@@ -12,7 +12,10 @@ case "$cmd" in
     cp -f deploy/demoreviewer-infra.service /etc/systemd/system/
     cp -f deploy/demoreviewer-web.service /etc/systemd/system/
     cp -f deploy/demoreviewer-worker.service /etc/systemd/system/
+    cp -f deploy/demoreviewer-purge.service /etc/systemd/system/
+    cp -f deploy/demoreviewer-purge.timer /etc/systemd/system/
     systemctl daemon-reload
+    systemctl enable --now demoreviewer-purge.timer
     ;;
   restart)
     systemctl restart demoreviewer-web demoreviewer-worker

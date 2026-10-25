@@ -14,6 +14,8 @@ export const env = {
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   s3: {
     endpoint: process.env.S3_ENDPOINT ?? "http://localhost:9000",
+    /** Endpoint the browser uploads to, if different from S3_ENDPOINT (default: same). */
+    publicEndpoint: process.env.S3_PUBLIC_ENDPOINT || null,
     region: process.env.S3_REGION ?? "us-east-1",
     accessKeyId: process.env.S3_ACCESS_KEY_ID ?? "skybox",
     secretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? "skyboxsecret",

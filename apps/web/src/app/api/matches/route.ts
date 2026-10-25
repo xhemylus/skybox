@@ -1,21 +1,20 @@
-import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
+import { z } from "zod";
 import { db } from "@/db/client";
 import { matches } from "@/db/schema";
 import { requireTeamUser } from "@/lib/auth";
 import { HttpError, handleRouteError, jsonError, jsonOk } from "@/lib/api";
-import { env } from "@/lib/env";
-import { putObject } from "@/lib/s3";
+import { assertValidDemo, demoKeyFor } from "@/lib/demoUpload";
+import { deleteObject, getObjectHead, headObjectSize } from "@/lib/s3";
 import { enqueueParse } from "@/lib/queue";
-import { acquireLock, clientIp, rateLimit, releaseLock } from "@/lib/redis";
 import { generateShareCode } from "@/lib/generateShareCode";
-import { MIN_DEMO_BYTES } from "@skybox/shared";
 
 export const runtime = "nodejs";
 
-/** One upload at a time on small VPS — parallel demos = OOM/freeze. */
-const UPLOAD_LOCK = "lock:upload:global";
-const UPLOAD_LOCK_TTL_SEC = 10 * 60;
+const CompleteBody = z.object({
+  uploadId: z.string().uuid(),
+  filename: z.string().trim().min(1).max(255),
+});
 
 export async function GET() {
   try {
@@ -31,141 +30,72 @@ export async function GET() {
   }
 }
 
+/**
+ * Step 2 of an upload: the browser has PUT the demo to storage (see ./uploads).
+ * Checks the stored object, creates the match and queues the parse. Duplicate
+ * detection happens in the worker, which hashes the file while downloading it.
+ */
 export async function POST(req: Request) {
   try {
     const user = await requireTeamUser();
 
-    if (!(await rateLimit(`rl:upload:${user.id}`, 30, 3600))) {
-      return jsonError("Trop d'uploads — réessaie plus tard.", 429);
-    }
-    if (!(await rateLimit(`rl:upload-ip:${clientIp(req)}`, 60, 3600))) {
-      return jsonError("Trop d'uploads — réessaie plus tard.", 429);
-    }
+    const parsed = CompleteBody.safeParse(await req.json());
+    if (!parsed.success) return jsonError("Requête invalide");
+    const { uploadId, filename } = parsed.data;
 
-    const lockToken = await acquireLock(UPLOAD_LOCK, UPLOAD_LOCK_TTL_SEC);
-    if (!lockToken) {
-      return jsonError(
-        "Un import est déjà en cours. Sur ce serveur, envoie une démo à la fois.",
-        429,
-      );
+    const demoKey = demoKeyFor(user.team.id, uploadId, filename);
+    const size = await headObjectSize(demoKey);
+    if (size == null) {
+      return jsonError("Fichier introuvable sur le stockage — l'envoi a échoué, réessaie.", 404);
     }
 
     try {
-      const form = await req.formData();
-      const file = form.get("file");
-
-      if (!(file instanceof File)) {
-        throw new HttpError("Fichier .dem requis");
-      }
-
-      const name = file.name.toLowerCase();
-      if (![".dem", ".zst", ".gz"].some((ext) => name.endsWith(ext))) {
-        throw new HttpError("Formats acceptés : .dem, .dem.zst, .dem.gz");
-      }
-
-      const maxBytes = env.maxDemoSizeMb * 1024 * 1024;
-      if (file.size > maxBytes) {
-        throw new HttpError(`Fichier trop volumineux (max ${env.maxDemoSizeMb} Mo)`);
-      }
-      if (file.size < MIN_DEMO_BYTES) {
-        throw new HttpError("Fichier trop petit pour être une démo CS2 complète.");
-      }
-
-      const buffer = Buffer.from(await file.arrayBuffer());
+      assertValidDemo(filename, size);
       // Uncompressed CS2 demos start with PBDEMS2
-      if (name.endsWith(".dem") && !buffer.subarray(0, 7).toString("latin1").startsWith("PBDEMS2")) {
+      if (
+        filename.toLowerCase().endsWith(".dem") &&
+        !(await getObjectHead(demoKey, 7)).toString("latin1").startsWith("PBDEMS2")
+      ) {
         throw new HttpError("Fichier .dem invalide (signature CS2 attendue).");
       }
-      const contentHash = createHash("sha256").update(buffer).digest("hex");
-
-      const [duplicate] = await db
-        .select({
-          id: matches.id,
-          filename: matches.filename,
-          parseStatus: matches.parseStatus,
-        })
-        .from(matches)
-        .where(and(eq(matches.teamId, user.team.id), eq(matches.contentHash, contentHash)))
-        .limit(1);
-
-      if (duplicate) {
-        return jsonError("Cette démo est déjà importée dans l'équipe.", 409, {
-          matchId: duplicate.id,
-          filename: duplicate.filename,
-          parseStatus: duplicate.parseStatus,
-        });
-      }
-
-      const matchId = randomUUID();
-      const safeName =
-        file.name
-          .replace(/[^a-zA-Z0-9._-]+/g, "_")
-          .replace(/^\.+/, "")
-          .slice(0, 180) || "demo.dem";
-      const demoKey = `demos/${user.team.id}/${matchId}/${safeName}`;
-      await putObject(demoKey, buffer, "application/octet-stream");
-
-      let match;
-      let lastErr: unknown;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          [match] = await db
-            .insert(matches)
-            .values({
-              id: matchId,
-              teamId: user.team.id,
-              uploadedBy: user.id,
-              filename: file.name,
-              shareCode: generateShareCode(8),
-              contentHash,
-              demoKey,
-              parseStatus: "pending",
-              parseProgress: 0,
-              parseStage: "En file d'attente",
-              fileSizeBytes: file.size,
-            })
-            .returning();
-          lastErr = null;
-          break;
-        } catch (err) {
-          lastErr = err;
-          const msg = err instanceof Error ? err.message : "";
-          // Race: another upload of the same bytes landed first
-          if (/unique|duplicate/i.test(msg) && /content_hash|contentHash/i.test(msg)) {
-            const [again] = await db
-              .select({
-                id: matches.id,
-                filename: matches.filename,
-                parseStatus: matches.parseStatus,
-              })
-              .from(matches)
-              .where(and(eq(matches.teamId, user.team.id), eq(matches.contentHash, contentHash)))
-              .limit(1);
-            if (again) {
-              return jsonError("Cette démo est déjà importée dans l'équipe.", 409, {
-                matchId: again.id,
-                filename: again.filename,
-                parseStatus: again.parseStatus,
-              });
-            }
-          }
-          // share_code collision → retry with a new code
-          if (/unique|duplicate/i.test(msg) && /share_code/i.test(msg)) continue;
-          throw err;
-        }
-      }
-      if (!match) throw lastErr instanceof Error ? lastErr : new Error("Insert match échoué");
-
-      await enqueueParse({
-        matchId: match.id,
-        teamId: user.team.id,
-        demoKey,
-      });
-
-      return jsonOk({ match }, { status: 201 });
-    } finally {
-      await releaseLock(UPLOAD_LOCK, lockToken);
+    } catch (err) {
+      await deleteObject(demoKey).catch(() => undefined);
+      throw err;
     }
+
+    let match;
+    for (let attempt = 0; attempt < 5 && !match; attempt++) {
+      try {
+        [match] = await db
+          .insert(matches)
+          .values({
+            id: uploadId,
+            teamId: user.team.id,
+            uploadedBy: user.id,
+            filename,
+            shareCode: generateShareCode(8),
+            demoKey,
+            parseStatus: "pending",
+            parseProgress: 0,
+            parseStage: "En file d'attente",
+            fileSizeBytes: size,
+          })
+          .returning();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "";
+        // share_code collision → retry with a new code
+        if (/unique|duplicate/i.test(msg) && /share_code/i.test(msg)) continue;
+        // Same uploadId finalized twice (double click / retry)
+        if (/unique|duplicate/i.test(msg) && /pkey/i.test(msg)) {
+          return jsonError("Cet envoi est déjà enregistré.", 409, { matchId: uploadId });
+        }
+        throw err;
+      }
+    }
+    if (!match) throw new Error("Insert match échoué");
+
+    await enqueueParse({ matchId: match.id, teamId: user.team.id, demoKey });
+    return jsonOk({ match }, { status: 201 });
   } catch (err) {
     return handleRouteError(err);
   }

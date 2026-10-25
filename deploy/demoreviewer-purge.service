@@ -1,0 +1,9 @@
+[Unit]
+Description=DemoReviewer retention purge (old matches + abandoned uploads)
+After=network.target demoreviewer-infra.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/demoreviewer
+EnvironmentFile=/opt/demoreviewer/.env
+ExecStart=/usr/bin/npm run purge:retention

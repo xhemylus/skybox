@@ -1,7 +1,7 @@
 import path from "node:path";
 import zlib from "node:zlib";
-import { Worker } from "bullmq";
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { Queue, UnrecoverableError, Worker } from "bullmq";
+import { and, eq, inArray, lt, ne } from "drizzle-orm";
 import {
   PARSE_QUEUE_NAME,
   humanizeParseError,
@@ -17,13 +17,23 @@ import { uploadObject } from "./s3";
 
 /** Matches stuck in "processing" longer than this are treated as crashed workers. */
 const STALE_PROCESSING_MS = 8 * 60 * 1000;
+/** "pending" matches older than this with no job in Redis get re-queued. */
+const LOST_PENDING_MS = 10 * 60 * 1000;
+const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
+
+const queue = new Queue<ParseJob>(PARSE_QUEUE_NAME, { connection: { url: env.redisUrl } });
+
+/** Match this process is parsing right now (concurrency 1) — never "recover" it. */
+let currentMatchId: string | null = null;
 
 async function recoverStaleJobs() {
   const cutoff = new Date(Date.now() - STALE_PROCESSING_MS);
-  const stale = await db
-    .select({ id: matches.id, teamId: matches.teamId, demoKey: matches.demoKey })
-    .from(matches)
-    .where(and(eq(matches.parseStatus, "processing"), lt(matches.updatedAt, cutoff)));
+  const stale = (
+    await db
+      .select({ id: matches.id, teamId: matches.teamId, demoKey: matches.demoKey })
+      .from(matches)
+      .where(and(eq(matches.parseStatus, "processing"), lt(matches.updatedAt, cutoff)))
+  ).filter((m) => m.id !== currentMatchId);
 
   if (!stale.length) return;
 
@@ -43,6 +53,42 @@ async function recoverStaleJobs() {
         stale.map((m) => m.id),
       ),
     );
+}
+
+/** Jobs can vanish from Redis (flush, restart without persistence) — re-queue them. */
+async function requeueLostJobs() {
+  const cutoff = new Date(Date.now() - LOST_PENDING_MS);
+  const pending = await db
+    .select({ id: matches.id, teamId: matches.teamId, demoKey: matches.demoKey })
+    .from(matches)
+    .where(and(eq(matches.parseStatus, "pending"), lt(matches.updatedAt, cutoff)));
+  if (!pending.length) return;
+
+  const jobs = await queue.getJobs(["waiting", "prioritized", "delayed", "active", "paused"]);
+  const queued = new Set(jobs.map((j) => j?.data?.matchId));
+  const lost = pending.filter((m) => !queued.has(m.id) && m.id !== currentMatchId);
+  if (!lost.length) return;
+
+  console.warn(`[worker] re-queueing ${lost.length} lost pending job(s)`);
+  for (const m of lost) {
+    await queue.add(
+      "parse",
+      { matchId: m.id, teamId: m.teamId, demoKey: m.demoKey },
+      {
+        jobId: `${m.id}-${Date.now()}`,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5000 },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+      },
+    );
+    await db.update(matches).set({ updatedAt: new Date() }).where(eq(matches.id, m.id));
+  }
+}
+
+async function runRecovery() {
+  await recoverStaleJobs().catch((err) => console.error("[worker] stale recovery failed", err));
+  await requeueLostJobs().catch((err) => console.error("[worker] lost-job recovery failed", err));
 }
 
 async function setProgress(matchId: string, pct: number, stage: string) {
@@ -93,12 +139,14 @@ async function processJob(job: ParseJob) {
   await withTempDir(async (dir) => {
     await setProgress(job.matchId, 5, "Téléchargement de la démo…");
     const rawPath = path.join(dir, "download.bin");
+    let contentHash: string;
     try {
-      await downloadToFile(existing.demoKey, rawPath);
+      contentHash = await downloadToFile(existing.demoKey, rawPath);
     } catch (err) {
       const detail = err instanceof Error ? err.message : "download failed";
       throw new Error(`Fichier démo introuvable sur le stockage (${detail})`);
     }
+    if (!existing.contentHash) await claimContentHash(existing, contentHash);
 
     await setProgress(job.matchId, 8, "Préparation fichier…");
     const demoPath = await materializeDemoFile(rawPath, dir);
@@ -188,6 +236,45 @@ async function processJob(job: ParseJob) {
   });
 }
 
+/**
+ * Uploads go straight to storage, so dedupe happens here: record the hash, or fail
+ * (without retries) if the team already has this exact file.
+ */
+async function claimContentHash(
+  match: { id: string; teamId: string },
+  contentHash: string,
+) {
+  const findDuplicate = async () => {
+    const [dup] = await db
+      .select({ filename: matches.filename })
+      .from(matches)
+      .where(
+        and(
+          eq(matches.teamId, match.teamId),
+          eq(matches.contentHash, contentHash),
+          ne(matches.id, match.id),
+        ),
+      )
+      .limit(1);
+    return dup;
+  };
+  const duplicateError = (filename: string) =>
+    new UnrecoverableError(
+      `Doublon : cette démo est déjà importée (« ${filename} »). Supprime ce match.`,
+    );
+
+  const dup = await findDuplicate();
+  if (dup) throw duplicateError(dup.filename);
+  try {
+    await db.update(matches).set({ contentHash }).where(eq(matches.id, match.id));
+  } catch (err) {
+    // Unique (team_id, content_hash): same file registered concurrently
+    const again = await findDuplicate();
+    if (again) throw duplicateError(again.filename);
+    throw err;
+  }
+}
+
 function applyPreferExisting(
   replay: ReplayData,
   prevA: string | null | undefined,
@@ -210,6 +297,7 @@ function applyPreferExisting(
 const worker = new Worker<ParseJob>(
   PARSE_QUEUE_NAME,
   async (job) => {
+    currentMatchId = job.data.matchId;
     try {
       await processJob(job.data);
     } catch (err) {
@@ -225,6 +313,8 @@ const worker = new Worker<ParseJob>(
         console.error(`[parse] could not persist failure for ${job.data.matchId}`, dbErr);
       }
       throw err;
+    } finally {
+      currentMatchId = null;
     }
   },
   {
@@ -234,17 +324,23 @@ const worker = new Worker<ParseJob>(
   },
 );
 
+let recoveryTimer: NodeJS.Timeout | null = null;
 worker.on("ready", () => {
   console.log("[worker] ready");
-  recoverStaleJobs().catch((err) => console.error("[worker] stale recovery failed", err));
+  void runRecovery();
+  recoveryTimer ??= setInterval(() => void runRecovery(), RECOVERY_INTERVAL_MS);
 });
 worker.on("failed", (job, err) => console.error("[worker] job failed", job?.id, err.message));
 
 process.on("SIGINT", async () => {
+  if (recoveryTimer) clearInterval(recoveryTimer);
   await worker.close();
+  await queue.close();
   process.exit(0);
 });
 process.on("SIGTERM", async () => {
+  if (recoveryTimer) clearInterval(recoveryTimer);
   await worker.close();
+  await queue.close();
   process.exit(0);
 });

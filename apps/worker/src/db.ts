@@ -21,6 +21,7 @@ export const matches = pgTable("matches", {
   id: uuid("id").primaryKey(),
   teamId: uuid("team_id").notNull(),
   filename: text("filename").notNull(),
+  contentHash: text("content_hash"),
   demoKey: text("demo_key").notNull(),
   replayKey: text("replay_key"),
   mapName: text("map_name"),

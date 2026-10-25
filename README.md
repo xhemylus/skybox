@@ -41,7 +41,7 @@ npm run dev:worker
 
 ### Upload démo
 
-Uploade un `.dem` / `.dem.zst` depuis le dashboard. Le worker parse avec demoparser2. En cas d’échec (fichier invalide, démo coupée, etc.), le match passe en `failed` avec un message clair — relance via **Reparse**.
+Uploade un `.dem` / `.dem.zst` depuis le dashboard. Le navigateur envoie le fichier directement dans le bucket (URL présignée — le serveur web ne le charge jamais en RAM), puis le worker le télécharge, détecte les doublons (SHA-256) et parse avec demoparser2. En prod sur R2, configure le CORS du bucket (voir `deploy/PROD.md`). En cas d’échec (fichier invalide, démo coupée, etc.), le match passe en `failed` avec un message clair — relance via **Reparse**.
 
 ## Déploiement VPS + Cloudflare R2
 
@@ -84,7 +84,7 @@ Reverse-proxy (Caddy/Nginx) vers le port 3000. Worker sur la même machine suffi
 ### Limites / rétention
 
 - Taille max upload : `MAX_DEMO_SIZE_MB` (défaut 512).
-- Rétention indicative : `DEMO_RETENTION_DAYS` (doc / ops — purge cron à brancher en phase 2).
+- Rétention : `DEMO_RETENTION_DAYS` (défaut 90, `0` = illimité). Purge quotidienne via `deploy/demoreviewer-purge.timer` (supprime aussi les uploads abandonnés > 24 h).
 - Auth invite-only : pas de signup public.
 
 ### Radars (pool compétitif)

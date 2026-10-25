@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -47,14 +48,25 @@ function asNodeReadable(body: unknown): Readable {
   throw new Error("Unsupported S3 body stream");
 }
 
-/** Download object to disk (no giant Buffer in JS). */
-export async function downloadToFile(key: string, dest: string): Promise<void> {
+/** Download object to disk (no giant Buffer in JS). Returns the SHA-256 of the bytes. */
+export async function downloadToFile(key: string, dest: string): Promise<string> {
   await ensureBucket();
   const res = await s3.send(
     new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }),
   );
   if (!res.Body) throw new Error(`Empty object ${key}`);
-  await pipeline(asNodeReadable(res.Body), fs.createWriteStream(dest));
+  const hash = createHash("sha256");
+  await pipeline(
+    asNodeReadable(res.Body),
+    new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        hash.update(chunk);
+        cb(null, chunk);
+      },
+    }),
+    fs.createWriteStream(dest),
+  );
+  return hash.digest("hex");
 }
 
 /**

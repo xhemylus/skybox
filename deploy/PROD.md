@@ -40,6 +40,21 @@ apt update && apt install -y caddy
 1. Cloudflare → R2 → bucket `demoreviewer-prod`
 2. API Token (Object Read & Write)
 3. Note endpoint : `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`
+4. **CORS** (obligatoire — le navigateur envoie les démos directement dans le bucket) :
+   bucket → Settings → CORS Policy → Add :
+
+   ```json
+   [
+     {
+       "AllowedOrigins": ["https://review.example.com"],
+       "AllowedMethods": ["PUT"],
+       "AllowedHeaders": ["content-type"],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+
+   Sans ça, l'upload échoue avec « Envoi vers le stockage échoué (réseau ou CORS) ».
 
 *(Sans R2 : tu peux lancer MinIO via `docker compose up -d minio` en local-only, moins idéal en prod.)*
 
