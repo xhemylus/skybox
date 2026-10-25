@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { TeamRole } from "@skybox/shared";
+import { canAssignRole, canManageTeam } from "@/lib/roles";
 
 const ROLE_LABEL: Record<TeamRole, string> = {
   player: "Joueur",
@@ -10,22 +11,6 @@ const ROLE_LABEL: Record<TeamRole, string> = {
   coach: "Coach",
   admin: "Admin",
 };
-
-const ROLE_RANK: Record<TeamRole, number> = {
-  player: 1,
-  manager: 2,
-  coach: 3,
-  admin: 4,
-};
-
-function canAssign(actor: TeamRole, target: TeamRole) {
-  if (target === "admin") return actor === "admin";
-  return ROLE_RANK[actor] >= ROLE_RANK[target];
-}
-
-function canManage(actor: TeamRole) {
-  return actor === "admin" || actor === "coach" || actor === "manager";
-}
 
 export type TeamMemberRow = {
   id: string;
@@ -58,7 +43,7 @@ export function TeamMembersTable({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const assignable = (Object.keys(ROLE_LABEL) as TeamRole[]).filter((r) =>
-    canAssign(actorRole, r),
+    canAssignRole(actorRole, r),
   );
 
   async function call(id: string, url: string, init: RequestInit) {
@@ -112,7 +97,7 @@ export function TeamMembersTable({
         <tbody>
           {members.map((m) => {
             const self = m.userId === actorUserId;
-            const editable = canManage(actorRole) && canAssign(actorRole, m.role);
+            const editable = canManageTeam(actorRole) && canAssignRole(actorRole, m.role);
             return (
               <tr key={m.id} className="border-b border-[var(--border)] last:border-0">
                 <td className="px-4 py-3">
@@ -171,7 +156,7 @@ export function TeamMembersTable({
         </tbody>
       </table>
 
-      {canManage(actorRole) && invites.length > 0 && (
+      {canManageTeam(actorRole) && invites.length > 0 && (
         <div className="border-t border-[var(--border)] px-4 py-3">
           <p className="section-label mb-2">Invitations en attente</p>
           <ul className="space-y-2 text-sm">

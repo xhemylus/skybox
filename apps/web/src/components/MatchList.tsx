@@ -93,7 +93,6 @@ export function MatchList({
     }
     setEditing(toMeta(first));
     // Only on mount / when match list changes — not when closing the editor
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches, canManage]);
 
   const tournaments = useMemo(() => {

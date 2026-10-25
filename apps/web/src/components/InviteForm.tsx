@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { TeamRole } from "@skybox/shared";
+import { canAssignRole } from "@/lib/roles";
 
 const ROLE_OPTIONS: { value: TeamRole; label: string }[] = [
   { value: "player", label: "Joueur" },
@@ -13,18 +14,10 @@ const ROLE_OPTIONS: { value: TeamRole; label: string }[] = [
 
 export function InviteForm({ actorRole }: { actorRole: TeamRole }) {
   const router = useRouter();
-  const assignable = useMemo(() => {
-    const rank: Record<TeamRole, number> = {
-      player: 1,
-      manager: 2,
-      coach: 3,
-      admin: 4,
-    };
-    return ROLE_OPTIONS.filter((r) => {
-      if (r.value === "admin") return actorRole === "admin";
-      return rank[actorRole] >= rank[r.value];
-    });
-  }, [actorRole]);
+  const assignable = useMemo(
+    () => ROLE_OPTIONS.filter((r) => canAssignRole(actorRole, r.value)),
+    [actorRole],
+  );
 
   const [steamId, setSteamId] = useState("");
   const [role, setRole] = useState<TeamRole>("player");

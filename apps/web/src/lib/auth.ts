@@ -15,6 +15,14 @@ import {
 import { fetchSteamProfile } from "./steam";
 import type { TeamRole } from "@skybox/shared";
 
+export {
+  canAssignRole,
+  canDeleteMatch,
+  canManageMember,
+  canManageTeam,
+  rolesAssignableBy,
+} from "./roles";
+
 const SESSION_COOKIE = "skybox_session";
 const SESSION_DAYS = 30;
 
@@ -153,30 +161,6 @@ async function tryBootstrapAdmin(user: User): Promise<boolean> {
 
   await attachToTeam(user.id, team.id, "admin");
   return true;
-}
-
-const ROLE_RANK: Record<TeamRole, number> = {
-  player: 1,
-  manager: 2,
-  coach: 3,
-  admin: 4,
-};
-
-/** Whether `actor` may grant `target` via invite. Admin-only for admin invites. */
-export function canAssignRole(actor: TeamRole, target: TeamRole): boolean {
-  if (target === "admin") return actor === "admin";
-  return ROLE_RANK[actor] >= ROLE_RANK[target];
-}
-
-/** Whether `actor` may change or remove a member currently holding `target`. */
-export function canManageMember(actor: TeamRole, target: TeamRole): boolean {
-  return canManageTeam(actor) && canAssignRole(actor, target);
-}
-
-export function rolesAssignableBy(actor: TeamRole): TeamRole[] {
-  return (["player", "manager", "coach", "admin"] as TeamRole[]).filter((r) =>
-    canAssignRole(actor, r),
-  );
 }
 
 /**
@@ -348,12 +332,4 @@ export async function requireTeamUser(): Promise<SessionUser & { team: Team; rol
     throw new Error("NO_TEAM");
   }
   return user as SessionUser & { team: Team; role: TeamRole };
-}
-
-export function canManageTeam(role: TeamRole) {
-  return role === "admin" || role === "coach" || role === "manager";
-}
-
-export function canDeleteMatch(role: TeamRole) {
-  return role === "admin" || role === "coach" || role === "manager";
 }

@@ -3,7 +3,6 @@ import {
   hasLowerLevel,
   normalizeMapName,
   worldToRadar,
-  type ReplayData,
   type Side,
   type UtilType,
 } from "@skybox/shared";
