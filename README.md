@@ -28,6 +28,16 @@ npm run dev
 npm run dev:worker
 ```
 
+### Vérifications (comme la CI)
+
+```bash
+npm run lint
+npm run typecheck
+npm test          # Vitest — rôles, redirections, Steam OpenID, uploads, décompression
+```
+
+La CI GitHub Actions (`.github/workflows/ci.yml`) lance lint + typecheck + tests + build sur chaque PR et chaque push sur `main`.
+
 - App : http://localhost:3000  
 - Console S3 (Silo) : http://localhost:9001 (`skybox` / `skyboxsecret`)
 

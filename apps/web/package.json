@@ -10,7 +10,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file=../../.env src/db/migrate.ts",
     "db:seed": "tsx --env-file=../../.env src/db/seed.ts",
-    "purge:retention": "tsx --env-file=../../.env src/scripts/purge-retention.ts"
+    "purge:retention": "tsx --env-file=../../.env src/scripts/purge-retention.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.782.0",

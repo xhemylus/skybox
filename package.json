@@ -16,9 +16,14 @@
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "setup": "npm install && npm run build -w @skybox/shared && npm run db:migrate && npm run db:seed",
-    "purge:retention": "npm run purge:retention -w @skybox/web"
+    "purge:retention": "npm run purge:retention -w @skybox/web",
+    "test": "vitest run",
+    "typecheck": "npm run typecheck -w @skybox/web && npm run typecheck -w @skybox/worker"
   },
   "engines": {
     "node": ">=22.15"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
   }
 }
