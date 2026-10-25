@@ -2,7 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
@@ -10,6 +10,24 @@ import { ensureBucket, s3 } from "./s3";
 import { env } from "./env";
 
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+/** Cap on decompressed size — a small .gz/.zst can expand to fill the disk. */
+const MAX_DECOMPRESSED_BYTES =
+  Number(process.env.MAX_DECOMPRESSED_DEMO_MB ?? "2048") * 1024 * 1024;
+
+function decompressedSizeLimit(): Transform {
+  let total = 0;
+  return new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      total += chunk.length;
+      if (total > MAX_DECOMPRESSED_BYTES) {
+        cb(new Error("Démo décompressée trop volumineuse (fichier corrompu ou malveillant)."));
+        return;
+      }
+      cb(null, chunk);
+    },
+  });
+}
 
 export async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "demoreviewer-"));
@@ -58,7 +76,12 @@ export async function materializeDemoFile(srcPath: string, dir: string): Promise
 
   const out = path.join(dir, "demo.dem");
   if (head[0] === 0x1f && head[1] === 0x8b) {
-    await pipeline(fs.createReadStream(srcPath), zlib.createGunzip(), fs.createWriteStream(out));
+    await pipeline(
+      fs.createReadStream(srcPath),
+      zlib.createGunzip(),
+      decompressedSizeLimit(),
+      fs.createWriteStream(out),
+    );
     await fsp.unlink(srcPath).catch(() => undefined);
     return out;
   }
@@ -69,11 +92,19 @@ export async function materializeDemoFile(srcPath: string, dir: string): Promise
     ).createZstdDecompress;
     if (!createZstd) {
       const raw = await fsp.readFile(srcPath);
-      await fsp.writeFile(out, zlib.zstdDecompressSync(raw));
+      await fsp.writeFile(
+        out,
+        zlib.zstdDecompressSync(raw, { maxOutputLength: MAX_DECOMPRESSED_BYTES }),
+      );
       await fsp.unlink(srcPath).catch(() => undefined);
       return out;
     }
-    await pipeline(fs.createReadStream(srcPath), createZstd(), fs.createWriteStream(out));
+    await pipeline(
+      fs.createReadStream(srcPath),
+      createZstd(),
+      decompressedSizeLimit(),
+      fs.createWriteStream(out),
+    );
     await fsp.unlink(srcPath).catch(() => undefined);
     return out;
   }

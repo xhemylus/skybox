@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { cookies } from "next/headers";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -16,6 +17,11 @@ import type { TeamRole } from "@skybox/shared";
 
 const SESSION_COOKIE = "skybox_session";
 const SESSION_DAYS = 30;
+
+/** Sessions are stored hashed so a DB leak doesn't hand out live cookies. */
+function hashSessionToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 export type SessionUser = User & {
   team: Team | null;
@@ -162,6 +168,11 @@ export function canAssignRole(actor: TeamRole, target: TeamRole): boolean {
   return ROLE_RANK[actor] >= ROLE_RANK[target];
 }
 
+/** Whether `actor` may change or remove a member currently holding `target`. */
+export function canManageMember(actor: TeamRole, target: TeamRole): boolean {
+  return canManageTeam(actor) && canAssignRole(actor, target);
+}
+
 export function rolesAssignableBy(actor: TeamRole): TeamRole[] {
   return (["player", "manager", "coach", "admin"] as TeamRole[]).filter((r) =>
     canAssignRole(actor, r),
@@ -256,7 +267,7 @@ export async function createInvite(opts: {
 async function createSession(userId: string) {
   const token = nanoid(64);
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
-  await db.insert(sessions).values({ userId, token, expiresAt });
+  await db.insert(sessions).values({ userId, token: hashSessionToken(token), expiresAt });
 
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, token, {
@@ -274,7 +285,7 @@ export async function destroySession() {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (token) {
-    await db.delete(sessions).where(eq(sessions.token, token));
+    await db.delete(sessions).where(eq(sessions.token, hashSessionToken(token)));
   }
   cookieStore.set(SESSION_COOKIE, "", {
     httpOnly: true,
@@ -293,7 +304,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   const [session] = await db
     .select()
     .from(sessions)
-    .where(and(eq(sessions.token, token), gt(sessions.expiresAt, new Date())))
+    .where(and(eq(sessions.token, hashSessionToken(token)), gt(sessions.expiresAt, new Date())))
     .limit(1);
 
   if (!session) return null;

@@ -10,7 +10,7 @@ Environment=NODE_ENV=production
 Environment=NODE_OPTIONS=--max-old-space-size=512
 EnvironmentFile=/opt/demoreviewer/.env
 ExecStartPre=/bin/sleep 2
-ExecStart=/usr/bin/npm run start -w @skybox/web
+ExecStart=/usr/bin/npm run start -w @skybox/web -- -H 127.0.0.1 -p 3000
 Restart=always
 RestartSec=5
 MemoryHigh=700M

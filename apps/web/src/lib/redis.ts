@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Redis from "ioredis";
 import { env } from "./env";
 
@@ -51,20 +52,24 @@ export function clientIp(req: Request): string {
   return "unknown";
 }
 
-/** Redis NX lock. Returns true if acquired. */
-export async function acquireLock(key: string, ttlSec: number): Promise<boolean> {
+/** Redis NX lock. Returns an owner token if acquired, null otherwise. */
+export async function acquireLock(key: string, ttlSec: number): Promise<string | null> {
+  const token = randomUUID();
   try {
-    const ok = await getRedis().set(key, "1", "EX", ttlSec, "NX");
-    return ok === "OK";
+    const ok = await getRedis().set(key, token, "EX", ttlSec, "NX");
+    return ok === "OK" ? token : null;
   } catch (err) {
     console.error("[lock] acquire failed — denying for safety", err);
-    return false;
+    return null;
   }
 }
 
-export async function releaseLock(key: string): Promise<void> {
+// Delete only if we still own it — the TTL may have expired and another request re-acquired.
+const RELEASE_LOCK_LUA = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+
+export async function releaseLock(key: string, token: string): Promise<void> {
   try {
-    await getRedis().del(key);
+    await getRedis().eval(RELEASE_LOCK_LUA, 1, key, token);
   } catch (err) {
     console.error("[lock] release failed", err);
   }

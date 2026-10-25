@@ -132,50 +132,53 @@ async function processJob(job: ParseJob) {
     });
 
     await setProgress(job.matchId, 95, "Écriture en base…");
-    await db.delete(rounds).where(eq(rounds.matchId, job.matchId));
-    await db.delete(playerMatchStats).where(eq(playerMatchStats.matchId, job.matchId));
-
-    await db.insert(rounds).values(
-      replay.rounds.map((r) => ({
-        matchId: job.matchId,
-        number: r.number,
-        startTick: r.startTick,
-        endTick: r.endTick,
-        winner: r.winnerSide,
-        winnerTeam: r.winnerTeam,
-        reason: r.reason,
-        sideA: r.sideOf.A,
-        buyA: r.buy.A,
-        buyB: r.buy.B,
-        scoreA: r.scoreA,
-        scoreB: r.scoreB,
-        bombSite: r.bomb.site,
-      })),
-    );
-
-    if (replay.stats.length) {
-      await db.insert(playerMatchStats).values(
-        replay.stats.map((s) => ({ matchId: job.matchId, ...s })),
-      );
-    }
-
     const last = replay.rounds[replay.rounds.length - 1];
-    await db
-      .update(matches)
-      .set({
-        parseStatus: "ready",
-        parseError: null,
-        parseProgress: 100,
-        parseStage: "Terminé",
-        replayKey,
-        mapName: replay.map,
-        scoreA: last.scoreA,
-        scoreB: last.scoreB,
-        teamAName: replay.teams[0].name,
-        teamBName: replay.teams[1].name,
-        updatedAt: new Date(),
-      })
-      .where(eq(matches.id, job.matchId));
+    // One transaction: a crash mid-write must not leave a match without rounds/stats.
+    await db.transaction(async (tx) => {
+      await tx.delete(rounds).where(eq(rounds.matchId, job.matchId));
+      await tx.delete(playerMatchStats).where(eq(playerMatchStats.matchId, job.matchId));
+
+      await tx.insert(rounds).values(
+        replay.rounds.map((r) => ({
+          matchId: job.matchId,
+          number: r.number,
+          startTick: r.startTick,
+          endTick: r.endTick,
+          winner: r.winnerSide,
+          winnerTeam: r.winnerTeam,
+          reason: r.reason,
+          sideA: r.sideOf.A,
+          buyA: r.buy.A,
+          buyB: r.buy.B,
+          scoreA: r.scoreA,
+          scoreB: r.scoreB,
+          bombSite: r.bomb.site,
+        })),
+      );
+
+      if (replay.stats.length) {
+        await tx.insert(playerMatchStats).values(
+          replay.stats.map((s) => ({ matchId: job.matchId, ...s })),
+        );
+      }
+
+      await tx
+        .update(matches)
+        .set({
+          parseStatus: "ready",
+          parseError: null,
+          parseProgress: 100,
+          parseStage: "Terminé",
+          replayKey,
+          mapName: replay.map,
+          scoreA: last.scoreA,
+          scoreB: last.scoreB,
+          teamAName: replay.teams[0].name,
+          teamBName: replay.teams[1].name,
+          updatedAt: new Date(),
+        })
+        .where(eq(matches.id, job.matchId));
+    });
 
     console.log(
       `[parse] ready ${job.matchId} map=${replay.map} rounds=${replay.rounds.length} ` +

@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { matches } from "@/db/schema";
 import { requireTeamUser } from "@/lib/auth";
-import { handleRouteError, jsonError, jsonOk } from "@/lib/api";
+import { HttpError, handleRouteError, jsonError, jsonOk } from "@/lib/api";
 import { env } from "@/lib/env";
 import { putObject } from "@/lib/s3";
 import { enqueueParse } from "@/lib/queue";
@@ -42,7 +42,8 @@ export async function POST(req: Request) {
       return jsonError("Trop d'uploads — réessaie plus tard.", 429);
     }
 
-    if (!(await acquireLock(UPLOAD_LOCK, UPLOAD_LOCK_TTL_SEC))) {
+    const lockToken = await acquireLock(UPLOAD_LOCK, UPLOAD_LOCK_TTL_SEC);
+    if (!lockToken) {
       return jsonError(
         "Un import est déjà en cours. Sur ce serveur, envoie une démo à la fois.",
         429,
@@ -54,26 +55,26 @@ export async function POST(req: Request) {
       const file = form.get("file");
 
       if (!(file instanceof File)) {
-        throw new Error("Fichier .dem requis");
+        throw new HttpError("Fichier .dem requis");
       }
 
       const name = file.name.toLowerCase();
       if (![".dem", ".zst", ".gz"].some((ext) => name.endsWith(ext))) {
-        throw new Error("Formats acceptés : .dem, .dem.zst, .dem.gz");
+        throw new HttpError("Formats acceptés : .dem, .dem.zst, .dem.gz");
       }
 
       const maxBytes = env.maxDemoSizeMb * 1024 * 1024;
       if (file.size > maxBytes) {
-        throw new Error(`Fichier trop volumineux (max ${env.maxDemoSizeMb} Mo)`);
+        throw new HttpError(`Fichier trop volumineux (max ${env.maxDemoSizeMb} Mo)`);
       }
       if (file.size < MIN_DEMO_BYTES) {
-        throw new Error("Fichier trop petit pour être une démo CS2 complète.");
+        throw new HttpError("Fichier trop petit pour être une démo CS2 complète.");
       }
 
       const buffer = Buffer.from(await file.arrayBuffer());
       // Uncompressed CS2 demos start with PBDEMS2
       if (name.endsWith(".dem") && !buffer.subarray(0, 7).toString("latin1").startsWith("PBDEMS2")) {
-        throw new Error("Fichier .dem invalide (signature CS2 attendue).");
+        throw new HttpError("Fichier .dem invalide (signature CS2 attendue).");
       }
       const contentHash = createHash("sha256").update(buffer).digest("hex");
 
@@ -163,7 +164,7 @@ export async function POST(req: Request) {
 
       return jsonOk({ match }, { status: 201 });
     } finally {
-      await releaseLock(UPLOAD_LOCK);
+      await releaseLock(UPLOAD_LOCK, lockToken);
     }
   } catch (err) {
     return handleRouteError(err);
